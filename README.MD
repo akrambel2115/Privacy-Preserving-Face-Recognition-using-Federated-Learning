@@ -28,4 +28,19 @@ train a shared global model while keeping raw images stored locally.
 
 * PyTorch
 * Flower
+* facenet_pytorch 
 
+
+## The main workflow of federated learning  :
+
+1. A global model is initialized either randomly  or with a pre-trained model. 
+2. The aggregating server sends the current version of the global model to the available clients
+3. The clients train the global model on their local data for a few iterations and send the model updates back
+4. The server aggregates the model updates to update the global model
+5. Steps 2-4 are repeated until the global model converges or achieves the desired performance.
+<img src="federated%20learning%20.png" alt="federated learning" width="600"/>
+
+
+**Our approach**
+<br>
+each client will have a single identity, we will use a pre-trained model that will be fine-tuned on the local data of each client. The server will aggregate the model updates using FedAvg to create a global model that can recognize all identities across clients.

@@ -43,4 +43,20 @@ train a shared global model while keeping raw images stored locally.
 
 **Our approach**
 <br>
-each client will have a single identity, we will use a pre-trained model that will be fine-tuned on the local data of each client. The server will aggregate the model updates using FedAvg to create a global model that can recognize all identities across clients.
+
+1. Pre-training & Mean Feature Initialization
+Global Pre-training: The server starts with a global face feature extractor(Facenet), parameterized by $\theta_{0}$, which is pre-trained on a publicly available dataset
+Initialization on Clients: In the first communication round, this global model is sent to all clients. Instead of initializing their personal class embedding randomly, each client generates their initial class embedding ($w_{0}^{i}$) by taking the mean of the features extracted from their local images using the pre-trained model
+Mathematical Representation: $w_{0}^{i}=\frac{1}{n_{i}}\sum_{j=1}^{n_{i}}f_{\theta_{0}}(x_{j}^{i})$
+(provides a significantly better starting point than a random guess and prevents the embeddings from disrupting the already learned feature space)
+
+2. Local Client Updates (Positive-Only Loss)Local Optimization: During each communication round, the client updates the model parameters ($\theta_{t}$) and its personal class embedding ($w_{t}^{i}$) using only its local data.The Loss Function: Because the client has no access to other people's faces (negative embeddings), it optimizes a "positive-only" loss function. Specifically a squared hinge loss with cosine distance:
+$$l_{pos}(f_{\theta_{t}}(x),i)=max(0,m-(w_{t}^{i})^{T}f_{\theta_{t}}(x))^{2}$$
+This simply encourages the model to make the user's face images highly similar to their own class embedding
+
+3. Server Aggregation Transmitting Updates: After local training, clients send their updated parameters back to the central server. Importantly, they only send their model weights and their single class embedding, never the raw face images
+Averaging: The server aggregates the feature extractor parameters ($\theta$) by taking a weighted average from all participating clients
+4. Spreadout Regularization (The Server-Side Fix)Preventing Collapse: Because the clients only trained on their own faces, the embeddings are at risk of collapsing into each other.The Regularizer: To fix this, the server applies a geometric technique called a Spreadout Regularizer directly to the concatenated class embedding matrix $W_{t}$.How it Works: This regularizer actively pushes the different class embeddings away from each other in the feature space. It penalizes the model if any two different class embeddings are too close to one another, enforcing a minimum margin of separation
+
+
+

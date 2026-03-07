@@ -42,8 +42,6 @@ train a shared global model while keeping raw images stored locally.
 
 
 **Our approach**
-<br>
-
 1. Pre-training & Mean Feature Initialization
 Global Pre-training: The server starts with a global face feature extractor(Facenet), parameterized by $\theta_{0}$, which is pre-trained on a publicly available dataset
 Initialization on Clients: In the first communication round, this global model is sent to all clients. Instead of initializing their personal class embedding randomly, each client generates their initial class embedding ($w_{0}^{i}$) by taking the mean of the features extracted from their local images using the pre-trained model

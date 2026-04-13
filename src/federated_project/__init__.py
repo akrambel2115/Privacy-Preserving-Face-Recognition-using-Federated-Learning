@@ -1,0 +1,1 @@
+"""Federated face recognition package."""

@@ -30,6 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--spreadout-lr", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default=None)
+    parser.add_argument(
+        "--checkpoint-path",
+        default=None,
+        help="Optional path to save final global model checkpoint (.pt).",
+    )
     return parser
 
 
@@ -50,6 +55,7 @@ def main() -> None:
         spreadout_lr=args.spreadout_lr,
         seed=args.seed,
         device=args.device,
+        checkpoint_path=args.checkpoint_path,
     )
 
     for result in results:

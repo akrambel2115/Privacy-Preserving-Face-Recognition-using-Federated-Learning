@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from pathlib import Path
+
+import torch
 
 from federated_project.dataset import get_num_classes, partition_dataset_by_client
 from federated_project.federation import (
@@ -29,6 +32,15 @@ class SimulationRoundResult:
     spreadout_loss: float
 
 
+def _sorted_client_names(data_dir: str) -> list[str]:
+    root = Path(data_dir)
+    return sorted(
+        entry.name
+        for entry in root.iterdir()
+        if entry.is_dir() and not entry.name.startswith(".")
+    )
+
+
 def run_simulation(
     data_dir: str,
     num_rounds: int = 3,
@@ -41,13 +53,15 @@ def run_simulation(
     spreadout_strength: float = 0.0,
     spreadout_margin: float = 0.35,
     spreadout_steps: int = 1,
-    spreadout_lr: float = 0.1,
+    spreadout_lr: float = 0.5,
     seed: int = 42,
     device: str | None = None,
+    checkpoint_path: str | None = None,
 ) -> list[SimulationRoundResult]:
     """Run the same client/server algorithm locally without Flower networking."""
     random.seed(seed)
 
+    class_names = _sorted_client_names(data_dir)
     num_clients = get_num_classes(data_dir)
     resolved_device = resolve_device(device)
     global_model = create_model(
@@ -122,6 +136,29 @@ def run_simulation(
                 train_loss=metrics["train_loss"],
                 spreadout_loss=metrics["spreadout_loss"],
             )
+        )
+
+    if checkpoint_path:
+        destination = Path(checkpoint_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "feature_extractor_state_dict": global_model.feature_extractor.state_dict(),
+                "W_matrix": global_model.W_matrix.detach().cpu(),
+                "num_clients": num_clients,
+                "class_names": class_names,
+                "pretrained": pretrained,
+                "round_results": [
+                    {
+                        "round_idx": item.round_idx,
+                        "participating_clients": item.participating_clients,
+                        "train_loss": item.train_loss,
+                        "spreadout_loss": item.spreadout_loss,
+                    }
+                    for item in results
+                ],
+            },
+            destination,
         )
 
     return results

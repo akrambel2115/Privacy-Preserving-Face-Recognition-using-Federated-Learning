@@ -1,0 +1,113 @@
+{
+  "checkpoint": ".\\results\\checkpoints\\smoke_checkpoint.pt",
+  "eval_dir": ".\\celebs\\Celebrity Faces Dataset",
+  "num_known_eval_classes": 17,
+  "num_unknown_eval_classes": 0,
+  "unknown_eval_classes": [],
+  "num_samples": 1800,
+  "overall_top1_accuracy": 0.16111111111111112,
+  "per_class": [
+    {
+      "class_name": "Angelina Jolie",
+      "num_images": 100,
+      "accuracy": 0.2,
+      "avg_true_similarity": 0.2369055426120758
+    },
+    {
+      "class_name": "Brad Pitt",
+      "num_images": 100,
+      "accuracy": 0.25,
+      "avg_true_similarity": 0.1762949275970459
+    },
+    {
+      "class_name": "Denzel Washington",
+      "num_images": 100,
+      "accuracy": 0.28,
+      "avg_true_similarity": 0.3585744309425354
+    },
+    {
+      "class_name": "Hugh Jackman",
+      "num_images": 100,
+      "accuracy": 0.17,
+      "avg_true_similarity": 0.2266191554069519
+    },
+    {
+      "class_name": "Jennifer Lawrence",
+      "num_images": 100,
+      "accuracy": 0.88,
+      "avg_true_similarity": 0.5239472913742066
+    },
+    {
+      "class_name": "Johnny Depp",
+      "num_images": 100,
+      "accuracy": 0.0,
+      "avg_true_similarity": -0.06776904687285423
+    },
+    {
+      "class_name": "Kate Winslet",
+      "num_images": 100,
+      "accuracy": 0.0,
+      "avg_true_similarity": -0.0019920944422483445
+    },
+    {
+      "class_name": "Leonardo DiCaprio",
+      "num_images": 100,
+      "accuracy": 0.0,
+      "avg_true_similarity": -0.0027487118169665335
+    },
+    {
+      "class_name": "Megan Fox",
+      "num_images": 100,
+      "accuracy": 0.0,
+      "avg_true_similarity": 0.043372276425361636
+    },
+    {
+      "class_name": "Natalie Portman",
+      "num_images": 100,
+      "accuracy": 0.0,
+      "avg_true_similarity": 0.020108999907970427
+    },
+    {
+      "class_name": "Nicole Kidman",
+      "num_images": 100,
+      "accuracy": 0.0,
+      "avg_true_similarity": -0.0021812094282358885
+    },
+    {
+      "class_name": "Robert Downey Jr",
+      "num_images": 100,
+      "accuracy": 0.17,
+      "avg_true_similarity": 0.2271907603740692
+    },
+    {
+      "class_name": "Sandra Bullock",
+      "num_images": 100,
+      "accuracy": 0.73,
+      "avg_true_similarity": 0.47973342895507814
+    },
+    {
+      "class_name": "Scarlett Johansson",
+      "num_images": 200,
+      "accuracy": 0.0,
+      "avg_true_similarity": -0.06600438728928566
+    },
+    {
+      "class_name": "Tom Cruise",
+      "num_images": 100,
+      "accuracy": 0.0,
+      "avg_true_similarity": 0.009350618459284305
+    },
+    {
+      "class_name": "Tom Hanks",
+      "num_images": 100,
+      "accuracy": 0.0,
+      "avg_true_similarity": 0.014563425481319427
+    },
+    {
+      "class_name": "Will Smith",
+      "num_images": 100,
+      "accuracy": 0.22,
+      "avg_true_similarity": 0.3782510006427765
+    }
+  ]
+}

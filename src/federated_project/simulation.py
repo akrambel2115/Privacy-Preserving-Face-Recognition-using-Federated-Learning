@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+
+import torch
 
 from federated_project.dataset import get_num_classes, partition_dataset_by_client
 from federated_project.federation import (
@@ -27,6 +31,32 @@ class SimulationRoundResult:
     participating_clients: list[int]
     train_loss: float
     spreadout_loss: float
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+MODELS_DIR = PROJECT_ROOT / "models"
+
+
+def save_model_state(model: torch.nn.Module, models_dir: Path = MODELS_DIR) -> Path:
+    """
+    Save the trained model using PyTorch's recommended state_dict format.
+
+    The file is written to the project's ``models`` directory and named with
+    the local save timestamp so each simulation run produces a distinct model
+    artifact.
+    """
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    saved_at = datetime.now().astimezone()
+    filename = f"{saved_at.strftime('%Y-%m-%d_%H-%M-%S_%f')}.pt"
+    save_path = models_dir / filename
+
+    cpu_state_dict = {
+        name: tensor.detach().cpu()
+        for name, tensor in model.state_dict().items()
+    }
+    torch.save(cpu_state_dict, save_path)
+    return save_path
 
 
 def run_simulation(
@@ -124,4 +154,5 @@ def run_simulation(
             )
         )
 
+    save_model_state(global_model)
     return results

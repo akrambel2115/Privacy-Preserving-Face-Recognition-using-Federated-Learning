@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import torch
@@ -30,15 +31,6 @@ class SimulationRoundResult:
     participating_clients: list[int]
     train_loss: float
     spreadout_loss: float
-
-
-def _sorted_client_names(data_dir: str) -> list[str]:
-    root = Path(data_dir)
-    return sorted(
-        entry.name
-        for entry in root.iterdir()
-        if entry.is_dir() and not entry.name.startswith(".")
-    )
 
 
 def run_simulation(
@@ -136,29 +128,6 @@ def run_simulation(
                 train_loss=metrics["train_loss"],
                 spreadout_loss=metrics["spreadout_loss"],
             )
-        )
-
-    if checkpoint_path:
-        destination = Path(checkpoint_path)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(
-            {
-                "feature_extractor_state_dict": global_model.feature_extractor.state_dict(),
-                "W_matrix": global_model.W_matrix.detach().cpu(),
-                "num_clients": num_clients,
-                "class_names": class_names,
-                "pretrained": pretrained,
-                "round_results": [
-                    {
-                        "round_idx": item.round_idx,
-                        "participating_clients": item.participating_clients,
-                        "train_loss": item.train_loss,
-                        "spreadout_loss": item.spreadout_loss,
-                    }
-                    for item in results
-                ],
-            },
-            destination,
         )
 
     return results

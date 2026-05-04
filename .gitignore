@@ -163,6 +163,10 @@ venv.bak/
 .dmypy.json
 dmypy.json
 
+# Model checkpoints and other large binary training artifacts
+results/checkpoints/*.pt
+results/checkpoints/*.pth
+
 # Pyre type checker
 .pyre/
 

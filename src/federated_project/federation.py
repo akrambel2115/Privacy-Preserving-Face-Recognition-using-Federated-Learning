@@ -114,6 +114,44 @@ def get_client_update_parameters(model: FedFaceModel, client_id: int) -> NDArray
     return get_feature_extractor_parameters(model) + [_to_numpy(client_embedding)]
 
 
+def get_secure_client_update_parameters(
+    model: FedFaceModel,
+    client_id: int,
+    selected_clients: int,
+    previous_embedding_matrix: np.ndarray,
+) -> NDArrays:
+    """
+    Serialize a full-model payload suitable for Flower SecAgg+.
+
+    SecAgg+ reveals only the aggregate tensor to the server. To preserve this
+    project's per-client embedding rows without exposing individual updates,
+    each client sends the previous global embedding matrix with only its own
+    row replaced by a scaled delta. After Flower averages all masked payloads,
+    participating rows become their locally updated embeddings and untouched
+    rows remain at the previous global value. Since each embedding row is
+    owned by a single client, the resulting global row is still visible as
+    part of the model state after aggregation.
+    """
+    if selected_clients <= 0:
+        raise ValueError("selected_clients must be positive.")
+
+    previous_matrix = np.asarray(previous_embedding_matrix).copy()
+    if previous_matrix.shape != tuple(model.W_matrix.shape):
+        raise ValueError(
+            "Unexpected previous embedding matrix shape. "
+            f"Expected {tuple(model.W_matrix.shape)}, received {previous_matrix.shape}."
+        )
+
+    updated_embedding = _to_numpy(
+        F.normalize(model.W_matrix[client_id].detach(), p=2, dim=0)
+    )
+    previous_row = previous_matrix[client_id].copy()
+    previous_matrix[client_id] = previous_row + selected_clients * (
+        updated_embedding - previous_row
+    )
+    return get_feature_extractor_parameters(model) + [previous_matrix]
+
+
 def split_client_update_parameters(
     model: FedFaceModel,
     parameters: Sequence[np.ndarray],

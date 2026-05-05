@@ -38,16 +38,34 @@ Flower's built-in SecAgg+ protocol. SecAgg+ masks client model updates so the
 server receives only the aggregated update, not any individual client's update.
 
 
-For this face-recognition workflow, the secure path returns a full masked model
-payload. The client's personal embedding row is encoded as a scaled delta so
-Flower's aggregate tensor reconstructs the updated global embedding matrix
-without exposing the individual transport payload to the server. Secure runs
-use equal client weighting and do not report per-client loss/sample metrics in
-the clear. Because each embedding row is owned by one client, the final global
-row should still be treated as visible model state; SecAgg+ primarily protects
-the shared backbone aggregation and update transport. The original
-`scripts/run_server.py` and `scripts/run_client.py` entrypoints still run the
-non-secure legacy Flower API.
+For this face-recognition workflow, the secure path exchanges only the shared
+FaceNet backbone. Each client's personal embedding row stays local on that
+client and is never sent to the server. Secure runs use equal client weighting
+and do not report per-client loss/sample metrics in the clear. Optional local
+differential privacy uses Flower's `LocalDpMod` to clip and noise the backbone
+update before it enters SecAgg+.
+
+Run with differential privacy disabled:
+
+```bash
+python scripts/run_simulation.py --data-dir data/your_dataset --num-clients 5
+```
+
+Run with client-side DP enabled for backbone updates:
+
+```bash
+python scripts/run_simulation.py --data-dir data/your_dataset --num-clients 5 --local-dp-enabled --local-dp-clipping-norm 1.0 --local-dp-sensitivity 1.0 --local-dp-epsilon 5.0 --local-dp-delta 0.00001
+```
+
+For a local deployment runtime, start one SuperLink and one SuperNode per
+client, then submit the app to the `local-deployment` federation:
+
+```bash
+python scripts/run_server.py --insecure
+python scripts/run_client.py --client-id 0 --num-clients 5 --insecure
+python scripts/run_client.py --client-id 1 --num-clients 5 --insecure --clientappio-api-address 127.0.0.1:9095
+python scripts/run_simulation.py --data-dir data/your_dataset --num-clients 5 --federation local-deployment
+```
 
 secure aggregation flow:
 
@@ -55,10 +73,9 @@ secure aggregation flow:
 2. Each client runs a ClientApp with secaggplus_mod.
 3. During training, clients mask/encrypt their model updates before sending them.
 4. The server cannot inspect individual client updates. It only receives the unmasked aggregate after Flower completes the SecAgg+ protocol.
-5. The shared FaceNet backbone is aggregated securely across clients.
-6. For the client-specific embedding matrix, each client sends a full masked matrix payload where only its own row is changed. After aggregation, the global matrix is reconstructed without exposing each transport payload directly.
-
-- Important limitation: each embedding row still belongs to one client, so the final global row is visible as model state after aggregation
+5. Optional Flower `LocalDpMod` clips/noises the backbone update before masking.
+6. The shared FaceNet backbone is aggregated securely across clients.
+7. Client-specific embeddings remain local and are not part of the secure payload.
 
 
 ## The main workflow of federated learning  :

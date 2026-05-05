@@ -7,6 +7,7 @@ import csv
 import itertools
 import json
 import random
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -17,9 +18,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
-
-from federated_project.simulation import run_simulation
-
 
 def _parse_list(raw: str, cast: type) -> list[Any]:
     values = [item.strip() for item in raw.split(",") if item.strip()]
@@ -40,20 +38,22 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr-list", default="0.001,0.0005")
     parser.add_argument("--margin-list", default="0.5")
     parser.add_argument("--pretrained-list", default="vggface2")
-    parser.add_argument("--spreadout-strength-list", default="0.0,1.0")
-    parser.add_argument("--spreadout-margin-list", default="0.35")
-    parser.add_argument("--spreadout-steps-list", default="1,5")
-    parser.add_argument("--spreadout-lr-list", default="0.1")
     parser.add_argument("--device", default=None)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--local-dp-enabled", action="store_true")
+    parser.add_argument("--local-dp-clipping-norm", type=float, default=1.0)
+    parser.add_argument("--local-dp-sensitivity", type=float, default=1.0)
+    parser.add_argument("--local-dp-epsilon", type=float, default=5.0)
+    parser.add_argument("--local-dp-delta", type=float, default=1e-5)
+    parser.add_argument("--no-stream", action="store_true")
 
     parser.add_argument(
         "--score-metric",
         choices=["final_train_loss", "final_train_plus_spreadout"],
         default="final_train_loss",
         help=(
-            "How to rank trials. lower is better. "
-            "final_train_plus_spreadout = final_train_loss + final_spreadout_loss"
+            "Kept for CLI compatibility. Secure runs do not expose train loss; "
+            "completed trials are ranked by duration."
         ),
     )
     parser.add_argument(
@@ -73,15 +73,51 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _score_trial(result: dict[str, Any], score_metric: str) -> float:
-    if score_metric == "final_train_plus_spreadout":
-        return float(result["final_train_loss"]) + float(result["final_spreadout_loss"])
-    return float(result["final_train_loss"])
+    return float(result["duration_sec"])
 
 
 def _to_python_type(value: Any) -> Any:
     if hasattr(value, "item"):
         return value.item()
     return value
+
+
+def _run_secure_trial(args: argparse.Namespace, config: dict[str, Any]) -> None:
+    command = [
+        sys.executable,
+        str(PROJECT_ROOT / "scripts" / "run_simulation.py"),
+        "--data-dir",
+        args.data_dir,
+        "--num-rounds",
+        str(config["num_rounds"]),
+        "--fraction-fit",
+        str(config["fraction_fit"]),
+        "--batch-size",
+        str(config["batch_size"]),
+        "--local-epochs",
+        str(config["local_epochs"]),
+        "--lr",
+        str(config["lr"]),
+        "--margin",
+        str(config["margin"]),
+        "--pretrained",
+        str(config["pretrained"]),
+        "--local-dp-clipping-norm",
+        str(args.local_dp_clipping_norm),
+        "--local-dp-sensitivity",
+        str(args.local_dp_sensitivity),
+        "--local-dp-epsilon",
+        str(args.local_dp_epsilon),
+        "--local-dp-delta",
+        str(args.local_dp_delta),
+    ]
+    if args.device is not None:
+        command.extend(["--device", args.device])
+    if args.local_dp_enabled:
+        command.append("--local-dp-enabled")
+    if args.no_stream:
+        command.append("--no-stream")
+    subprocess.run(command, cwd=PROJECT_ROOT, check=True)
 
 
 def main() -> None:
@@ -95,10 +131,6 @@ def main() -> None:
         "lr": _parse_list(args.lr_list, float),
         "margin": _parse_list(args.margin_list, float),
         "pretrained": _parse_list(args.pretrained_list, str),
-        "spreadout_strength": _parse_list(args.spreadout_strength_list, float),
-        "spreadout_margin": _parse_list(args.spreadout_margin_list, float),
-        "spreadout_steps": _parse_list(args.spreadout_steps_list, int),
-        "spreadout_lr": _parse_list(args.spreadout_lr_list, float),
     }
 
     names = list(grid.keys())
@@ -129,31 +161,15 @@ def main() -> None:
         start = time.perf_counter()
         print(f"[{idx}/{len(combinations)}] Running: {config}")
         try:
-            round_results = run_simulation(
-                data_dir=args.data_dir,
-                num_rounds=config["num_rounds"],
-                fraction_fit=config["fraction_fit"],
-                batch_size=config["batch_size"],
-                local_epochs=config["local_epochs"],
-                lr=config["lr"],
-                margin=config["margin"],
-                pretrained=config["pretrained"],
-                spreadout_strength=config["spreadout_strength"],
-                spreadout_margin=config["spreadout_margin"],
-                spreadout_steps=config["spreadout_steps"],
-                spreadout_lr=config["spreadout_lr"],
-                seed=args.seed,
-                device=args.device,
-            )
-            last = round_results[-1]
+            _run_secure_trial(args, config)
             duration_sec = time.perf_counter() - start
 
             result = {
                 "status": "ok",
                 "duration_sec": round(duration_sec, 3),
-                "final_round": int(last.round_idx),
-                "final_train_loss": float(last.train_loss),
-                "final_spreadout_loss": float(last.spreadout_loss),
+                "final_round": int(config["num_rounds"]),
+                "final_train_loss": "",
+                "final_spreadout_loss": "",
                 **config,
             }
             result["score"] = _score_trial(result, args.score_metric)
@@ -164,9 +180,8 @@ def main() -> None:
 
             print(
                 "    done "
-                f"train_loss={result['final_train_loss']:.6f}, "
-                f"spreadout_loss={result['final_spreadout_loss']:.6f}, "
-                f"score={result['score']:.6f}"
+                f"duration_sec={result['duration_sec']:.3f}, "
+                f"score={result['score']:.3f}"
             )
         except Exception as exc:  # pragma: no cover - defensive for long tuning jobs
             duration_sec = time.perf_counter() - start

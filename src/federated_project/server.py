@@ -23,10 +23,10 @@ from flwr.server.workflow import DefaultWorkflow, SecAggPlusWorkflow
 from federated_project.federation import (
     ClientUpdate,
     aggregate_client_updates,
-    apply_spreadout_regularization,
     create_model,
+    get_feature_extractor_parameters,
     get_global_parameters,
-    set_global_parameters,
+    set_feature_extractor_parameters,
     split_client_update_parameters,
 )
 
@@ -35,12 +35,14 @@ class SpreadoutFedAvg(FedAvg):
     """
     Flower FedAvg strategy customized for the README pipeline.
 
-    Clients receive the full global model, train locally, and return:
+    In legacy mode, clients receive the full global model, train locally, and return:
     1. updated FaceNet feature extractor weights
     2. their own class embedding row only
 
     The server then averages the feature extractor, restores each embedding row
     into the global matrix, and optionally applies spreadout regularization.
+    In secure mode, clients exchange only the shared FaceNet backbone; personal
+    embedding rows stay on client devices.
     """
 
     def __init__(
@@ -65,10 +67,12 @@ class SpreadoutFedAvg(FedAvg):
         self.spreadout_lr = spreadout_lr
         self.secure_aggregation = secure_aggregation
 
-        kwargs.setdefault(
-            "initial_parameters",
-            ndarrays_to_parameters(get_global_parameters(self.model)),
+        initial_ndarrays = (
+            get_feature_extractor_parameters(self.model)
+            if self.secure_aggregation
+            else get_global_parameters(self.model)
         )
+        kwargs.setdefault("initial_parameters", ndarrays_to_parameters(initial_ndarrays))
         super().__init__(**kwargs)
 
     def configure_fit(
@@ -86,10 +90,8 @@ class SpreadoutFedAvg(FedAvg):
         if not self.secure_aggregation:
             return configured_clients
 
-        selected_clients = len(configured_clients)
         for _client_proxy, fit_ins in configured_clients:
             fit_ins.config["secure_aggregation"] = True
-            fit_ins.config["secure_selected_clients"] = selected_clients
         return configured_clients
 
     def aggregate_fit(
@@ -106,18 +108,10 @@ class SpreadoutFedAvg(FedAvg):
 
         if self.secure_aggregation:
             aggregated_parameters = parameters_to_ndarrays(results[0][1].parameters)
-            set_global_parameters(self.model, aggregated_parameters)
-            spreadout_loss = apply_spreadout_regularization(
-                self.model,
-                margin=self.spreadout_margin,
-                strength=self.spreadout_strength,
-                steps=self.spreadout_steps,
-                lr=self.spreadout_lr,
-            )
+            set_feature_extractor_parameters(self.model, aggregated_parameters)
             metrics = _aggregate_secure_fit_metrics(results)
-            metrics["spreadout_loss"] = spreadout_loss
             metrics["server_round"] = float(server_round)
-            return ndarrays_to_parameters(get_global_parameters(self.model)), metrics
+            return ndarrays_to_parameters(get_feature_extractor_parameters(self.model)), metrics
 
         client_updates: list[ClientUpdate] = []
         for _client_proxy, fit_res in results:
@@ -172,20 +166,7 @@ def build_fit_config_fn(
 def _aggregate_secure_fit_metrics(
     results: list[tuple[ClientProxy, fl.common.FitRes]],
 ) -> dict[str, Scalar]:
-    weighted_losses = []
-    counted_examples = 0
-    for _client_proxy, fit_res in results:
-        metrics = fit_res.metrics
-        if "loss" not in metrics:
-            continue
-        num_samples = int(metrics.get("num_samples", fit_res.num_examples))
-        weighted_losses.append(float(metrics["loss"]) * num_samples)
-        counted_examples += num_samples
-
     return {
-        "train_loss": (
-            float(sum(weighted_losses) / counted_examples) if counted_examples else 0.0
-        ),
         "secure_aggregation": True,
     }
 

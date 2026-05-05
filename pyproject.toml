@@ -44,6 +44,11 @@ spreadout-margin = 0.35
 spreadout-steps = 1
 spreadout-lr = 0.1
 accept-failures = false
+local-dp-enabled = false
+local-dp-clipping-norm = 1.0
+local-dp-sensitivity = 1.0
+local-dp-epsilon = 5.0
+local-dp-delta = 0.00001
 
 # SecAgg+ protocol parameters.
 num-shares = 3
@@ -53,3 +58,7 @@ secure-clipping-range = 64.0
 quantization-range = 4194304
 modulus-range = 4294967296
 secure-timeout = 60.0
+
+[tool.flwr.federations.local-deployment]
+address = "127.0.0.1:9093"
+insecure = true

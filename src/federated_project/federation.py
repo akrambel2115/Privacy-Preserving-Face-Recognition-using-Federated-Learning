@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from federated_project.dp_utils import privatize_anchor
 from federated_project.model import FedFaceModel
 
 NDArrays = list[np.ndarray]
@@ -108,10 +109,35 @@ def set_global_parameters(
     model.W_matrix.data.copy_(F.normalize(embedding_matrix, p=2, dim=1))
 
 
-def get_client_update_parameters(model: FedFaceModel, client_id: int) -> NDArrays:
-    """Serialize the payload a client returns after local training."""
+def get_client_update_parameters(
+    model: FedFaceModel,
+    client_id: int,
+    *,
+    n_local_samples: int | None = None,
+    dp_anchor_noise_multiplier: float = 0.0,
+    anchor_sensitivity_override: float | None = None,
+) -> NDArrays:
+    """Serialize the payload a client returns after local training.
+
+    Payload layout (non-secure path):
+      [feature_extractor_tensors...] + [client_anchor_row]
+
+    The anchor row can be privatized with Gaussian noise at serialization time.
+    """
     client_embedding = F.normalize(model.W_matrix[client_id].detach(), p=2, dim=0)
-    return get_feature_extractor_parameters(model) + [_to_numpy(client_embedding)]
+    client_embedding_np = _to_numpy(client_embedding)
+
+    if dp_anchor_noise_multiplier != 0.0:
+        if n_local_samples is None:
+            raise ValueError("n_local_samples must be provided when anchor DP is enabled")
+        client_embedding_np = privatize_anchor(
+            anchor=client_embedding_np,
+            n_local_samples=int(n_local_samples),
+            noise_multiplier=float(dp_anchor_noise_multiplier),
+            sensitivity_override=anchor_sensitivity_override,
+        )
+
+    return get_feature_extractor_parameters(model) + [client_embedding_np]
 
 
 def get_secure_client_update_parameters(

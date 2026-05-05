@@ -1,0 +1,63 @@
+{
+  "experiment_config": {
+    "noise_multipliers": [
+      0.0,
+      0.5,
+      1.0,
+      2.0
+    ],
+    "clip_norm": 1.0,
+    "num_rounds": 17,
+    "delta": 1e-05,
+    "fraction_fit": 0.9480456499617467,
+    "batch_size": 64,
+    "local_epochs": 5,
+    "lr": 0.0038211294416912265,
+    "margin": 0.109732982743667,
+    "pretrained": "vggface2",
+    "spreadout_strength": 0.4442156209414605,
+    "spreadout_margin": 0.20787883060031453,
+    "spreadout_steps": 4,
+    "spreadout_lr": 0.5910698619088539,
+    "backbone": "InceptionResnetV1",
+    "embedding_dim": 512
+  },
+  "results": [
+    {
+      "noise_multiplier": 0.0,
+      "delta": 1e-05,
+      "tar_at_far_0001": 0.001333,
+      "clip_norm": 1.0,
+      "num_rounds": 17,
+      "timestamp": "2026-05-05T00:32:26Z",
+      "epsilon": null
+    },
+    {
+      "noise_multiplier": 0.5,
+      "delta": 1e-05,
+      "tar_at_far_0001": 0.001333,
+      "clip_norm": 1.0,
+      "num_rounds": 17,
+      "timestamp": "2026-05-05T00:51:10Z",
+      "epsilon": NaN
+    },
+    {
+      "noise_multiplier": 1.0,
+      "delta": 1e-05,
+      "tar_at_far_0001": 0.001333,
+      "clip_norm": 1.0,
+      "num_rounds": 17,
+      "timestamp": "2026-05-05T01:09:33Z",
+      "epsilon": NaN
+    },
+    {
+      "noise_multiplier": 2.0,
+      "delta": 1e-05,
+      "tar_at_far_0001": 0.001333,
+      "clip_norm": 1.0,
+      "num_rounds": 17,
+      "timestamp": "2026-05-05T01:28:17Z",
+      "epsilon": NaN
+    }
+  ]
+}

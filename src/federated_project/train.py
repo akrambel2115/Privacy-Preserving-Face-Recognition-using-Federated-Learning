@@ -16,11 +16,15 @@
 #   • θ   — the feature extractor parameters
 #   • w_i — its personal class embedding (row i of the global W matrix)
 
+import time
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from typing import Optional
+
+from federated_project.dp_utils import add_gaussian_noise_inplace, compute_clipped_grad_sum
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +77,8 @@ def initialize_client_embedding(
     dataloader: DataLoader,
     client_id: int,
     device: torch.device = torch.device("cpu"),
+    log_every_batches: int = 0,
+    log_prefix: str = "",
 ) -> None:
     """
     Initialise a client's class embedding using *Mean Feature Initialization*.
@@ -96,10 +102,21 @@ def initialize_client_embedding(
     """
     model.eval()
 
+    if log_every_batches < 0:
+        raise ValueError("log_every_batches must be >= 0")
+
     embedding_sum = None
     num_samples = 0
 
-    for images, _ in dataloader:
+    t0 = time.perf_counter()
+
+    if log_every_batches:
+        try:
+            total_batches = len(dataloader)
+        except TypeError:
+            total_batches = None
+
+    for batch_idx, (images, _) in enumerate(dataloader, start=1):
         images = images.to(device)
         features = model(images)  # (B, d), already L2-normalised
 
@@ -109,6 +126,19 @@ def initialize_client_embedding(
             embedding_sum += features.sum(dim=0)
 
         num_samples += features.size(0)
+
+        if log_every_batches and (batch_idx == 1 or batch_idx % log_every_batches == 0):
+            elapsed = time.perf_counter() - t0
+            if total_batches:
+                print(
+                    f"{log_prefix}init_embed client={client_id} "
+                    f"batch={batch_idx}/{total_batches} samples={num_samples} sec={elapsed:.2f}"
+                )
+            else:
+                print(
+                    f"{log_prefix}init_embed client={client_id} "
+                    f"batch={batch_idx} samples={num_samples} sec={elapsed:.2f}"
+                )
 
     # mean embedding — then L2-normalise
     mean_embedding = embedding_sum / num_samples
@@ -129,6 +159,8 @@ def train_one_round(
     local_epochs: int = 1,
     lr: float = 1e-3,
     margin: float = 0.5,
+    dp_clip_norm: float = 1.0,
+    dp_noise_multiplier: float = 0.0,
     device: torch.device = torch.device("cpu"),
     optimizer: Optional[torch.optim.Optimizer] = None,
 ) -> dict:
@@ -195,12 +227,47 @@ def train_one_round(
             w_i = F.normalize(model.W_matrix[client_id], p=2, dim=0)
 
             # 3. Compute positive-only squared hinge loss
-            loss = positive_only_loss(features, w_i, margin=margin)
+            #    We keep per-sample losses so we can compute per-sample clipped
+            #    gradients for DP-SGD when enabled.
+            cos_sim = torch.matmul(features, w_i)  # (B,)
+            hinge = torch.clamp(margin - cos_sim, min=0.0)
+            per_sample_losses = hinge ** 2
+            loss = per_sample_losses.mean()
 
             # 4. Back-propagate and step
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+
+            if dp_noise_multiplier == 0.0:
+                loss.backward()
+                optimizer.step()
+            else:
+                # Compute standard gradients first so that W_matrix updates remain
+                # non-DP (anchor has separate privatization at serialization time).
+                loss.backward(retain_graph=True)
+
+                backbone_params = [
+                    p for p in model.feature_extractor.parameters() if p.requires_grad
+                ]
+
+                clipped_sums = compute_clipped_grad_sum(
+                    per_sample_losses,
+                    backbone_params,
+                    clip_norm=dp_clip_norm,
+                )
+                add_gaussian_noise_inplace(
+                    clipped_sums,
+                    clip_norm=dp_clip_norm,
+                    noise_multiplier=dp_noise_multiplier,
+                )
+
+                # DP-SGD uses the noisy, clipped *mean* gradient for the optimizer.
+                for param, grad_sum in zip(backbone_params, clipped_sums):
+                    param.grad = (grad_sum / float(batch_size)).to(
+                        dtype=param.dtype,
+                        device=param.device,
+                    )
+
+                optimizer.step()
 
             running_loss += loss.item() * batch_size
             running_samples += batch_size
@@ -228,7 +295,11 @@ def client_train(
     local_epochs: int = 1,
     lr: float = 1e-3,
     margin: float = 0.5,
+    dp_clip_norm: float = 1.0,
+    dp_noise_multiplier: float = 0.0,
     device: torch.device = torch.device("cpu"),
+    init_dataloader: DataLoader | None = None,
+    embedding_init_log_every: int = 0,
 ) -> dict:
     """
     Complete client-side routine for a single communication round.
@@ -254,7 +325,14 @@ def client_train(
     """
     # --- First round: Mean Feature Initialization -----------------------
     if round_num == 0:
-        initialize_client_embedding(model, dataloader, client_id, device)
+        initialize_client_embedding(
+            model,
+            init_dataloader or dataloader,
+            client_id,
+            device,
+            log_every_batches=embedding_init_log_every,
+            log_prefix="  ",
+        )
 
     # --- Local training -------------------------------------------------
     results = train_one_round(
@@ -264,6 +342,8 @@ def client_train(
         local_epochs=local_epochs,
         lr=lr,
         margin=margin,
+        dp_clip_norm=dp_clip_norm,
+        dp_noise_multiplier=dp_noise_multiplier,
         device=device,
     )
 

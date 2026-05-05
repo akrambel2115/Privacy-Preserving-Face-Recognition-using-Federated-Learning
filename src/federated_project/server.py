@@ -155,6 +155,9 @@ def build_fit_config_fn(
     local_epochs: int,
     learning_rate: float,
     margin: float,
+    dp_clip_norm: float,
+    dp_noise_multiplier: float,
+    dp_anchor_noise_multiplier: float,
 ) -> Callable[[int], dict[str, Scalar]]:
     """Create the configuration callback sent by Flower before each round."""
 
@@ -164,6 +167,9 @@ def build_fit_config_fn(
             "local_epochs": local_epochs,
             "lr": learning_rate,
             "margin": margin,
+            "dp_clip_norm": dp_clip_norm,
+            "dp_noise_multiplier": dp_noise_multiplier,
+            "dp_anchor_noise_multiplier": dp_anchor_noise_multiplier,
         }
 
     return fit_config
@@ -225,8 +231,16 @@ def create_server_strategy(
     spreadout_lr: float = 0.1,
     accept_failures: bool = False,
     secure_aggregation: bool = False,
+    dp_clip_norm: float = 1.0,
+    dp_noise_multiplier: float = 0.0,
+    dp_anchor_noise_multiplier: float = 0.0,
 ) -> SpreadoutFedAvg:
     """Create the Flower strategy with sensible defaults for this project."""
+    if secure_aggregation and (dp_noise_multiplier != 0.0 or dp_anchor_noise_multiplier != 0.0):
+        raise NotImplementedError(
+            "DP is not yet compatible with the SecAgg+ execution path. "
+            "Disable secure_aggregation when enabling DP."
+        )
     return SpreadoutFedAvg(
         num_clients=num_clients,
         pretrained=pretrained,
@@ -239,6 +253,9 @@ def create_server_strategy(
             local_epochs=local_epochs,
             learning_rate=learning_rate,
             margin=margin,
+            dp_clip_norm=dp_clip_norm,
+            dp_noise_multiplier=dp_noise_multiplier,
+            dp_anchor_noise_multiplier=dp_anchor_noise_multiplier,
         ),
         fit_metrics_aggregation_fn=weighted_average_metrics,
         spreadout_strength=spreadout_strength,

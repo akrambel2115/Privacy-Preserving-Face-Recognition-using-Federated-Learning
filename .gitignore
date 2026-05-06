@@ -221,3 +221,5 @@ requirements.windows.txt
 paper.pdf
 docs
 eval
+custom_test/best_run.pt
+*.pt

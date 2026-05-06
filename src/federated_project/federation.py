@@ -145,6 +145,10 @@ def get_secure_client_update_parameters(
     client_id: int,
     selected_clients: int,
     previous_embedding_matrix: np.ndarray,
+    *,
+    n_local_samples: int | None = None,
+    dp_anchor_noise_multiplier: float = 0.0,
+    anchor_sensitivity_override: float | None = None,
 ) -> NDArrays:
     """
     Serialize a full-model payload suitable for Flower SecAgg+.
@@ -171,6 +175,16 @@ def get_secure_client_update_parameters(
     updated_embedding = _to_numpy(
         F.normalize(model.W_matrix[client_id].detach(), p=2, dim=0)
     )
+
+    if dp_anchor_noise_multiplier != 0.0:
+        if n_local_samples is None:
+            raise ValueError("n_local_samples must be provided when anchor DP is enabled")
+        updated_embedding = privatize_anchor(
+            anchor=updated_embedding,
+            n_local_samples=int(n_local_samples),
+            noise_multiplier=float(dp_anchor_noise_multiplier),
+            sensitivity_override=anchor_sensitivity_override,
+        )
     previous_row = previous_matrix[client_id].copy()
     previous_matrix[client_id] = previous_row + selected_clients * (
         updated_embedding - previous_row

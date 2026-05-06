@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 import flwr as fl
+import torch
 from flwr.common import (
     Context,
     FitIns,
@@ -29,6 +32,19 @@ from federated_project.federation import (
     set_global_parameters,
     split_client_update_parameters,
 )
+
+
+def _sorted_client_names(data_dir: str, num_clients: int) -> list[str]:
+    root = Path(data_dir)
+    if root.exists():
+        names = sorted(
+            entry.name
+            for entry in root.iterdir()
+            if entry.is_dir() and not entry.name.startswith(".")
+        )
+        if names:
+            return names
+    return [f"client_{idx}" for idx in range(int(num_clients))]
 
 
 class SpreadoutFedAvg(FedAvg):
@@ -236,11 +252,6 @@ def create_server_strategy(
     dp_anchor_noise_multiplier: float = 0.0,
 ) -> SpreadoutFedAvg:
     """Create the Flower strategy with sensible defaults for this project."""
-    if secure_aggregation and (dp_noise_multiplier != 0.0 or dp_anchor_noise_multiplier != 0.0):
-        raise NotImplementedError(
-            "DP is not yet compatible with the SecAgg+ execution path. "
-            "Disable secure_aggregation when enabling DP."
-        )
     return SpreadoutFedAvg(
         num_clients=num_clients,
         pretrained=pretrained,
@@ -316,6 +327,11 @@ def main(grid: Grid, context: Context) -> None:
         spreadout_steps=int(_run_config_value(context, "spreadout-steps", 1)),
         spreadout_lr=float(_run_config_value(context, "spreadout-lr", 0.1)),
         accept_failures=_run_config_bool(context, "accept-failures", False),
+        dp_clip_norm=float(_run_config_value(context, "dp-clip-norm", 1.0)),
+        dp_noise_multiplier=float(_run_config_value(context, "dp-noise-multiplier", 0.0)),
+        dp_anchor_noise_multiplier=float(
+            _run_config_value(context, "dp-anchor-noise-multiplier", 0.0)
+        ),
         secure_aggregation=True,
     )
 
@@ -343,3 +359,37 @@ def main(grid: Grid, context: Context) -> None:
     )
     workflow = DefaultWorkflow(fit_workflow=fit_workflow)
     workflow(grid, legacy_context)
+
+    checkpoint_path = str(_run_config_value(context, "checkpoint-path", ""))
+    if checkpoint_path:
+        data_dir = str(_run_config_value(context, "data-dir", "data"))
+        class_names = _sorted_client_names(data_dir=data_dir, num_clients=num_clients)
+        checkpoint_file = Path(checkpoint_path)
+        checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "created_at": datetime.utcnow().isoformat() + "Z",
+                "secure_aggregation": True,
+                "class_names": class_names,
+                "num_clients": int(num_clients),
+                "pretrained": str(_run_config_value(context, "pretrained", "vggface2")),
+                "feature_extractor_state_dict": strategy.model.feature_extractor.state_dict(),
+                "W_matrix": strategy.model.W_matrix.detach().cpu(),
+                "num_rounds": int(num_rounds),
+                "fraction_fit": float(_run_config_value(context, "fraction-fit", 1.0)),
+                "batch_size": int(_run_config_value(context, "batch-size", 16)),
+                "local_epochs": int(_run_config_value(context, "local-epochs", 1)),
+                "learning_rate": float(_run_config_value(context, "learning-rate", 1e-3)),
+                "margin": float(_run_config_value(context, "margin", 0.5)),
+                "spreadout_strength": float(_run_config_value(context, "spreadout-strength", 0.0)),
+                "spreadout_margin": float(_run_config_value(context, "spreadout-margin", 0.35)),
+                "spreadout_steps": int(_run_config_value(context, "spreadout-steps", 1)),
+                "spreadout_lr": float(_run_config_value(context, "spreadout-lr", 0.1)),
+                "dp_clip_norm": float(_run_config_value(context, "dp-clip-norm", 1.0)),
+                "dp_noise_multiplier": float(_run_config_value(context, "dp-noise-multiplier", 0.0)),
+                "dp_anchor_noise_multiplier": float(
+                    _run_config_value(context, "dp-anchor-noise-multiplier", 0.0)
+                ),
+            },
+            checkpoint_file,
+        )

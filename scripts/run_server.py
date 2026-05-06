@@ -30,6 +30,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--spreadout-margin", type=float, default=0.35)
     parser.add_argument("--spreadout-steps", type=int, default=1)
     parser.add_argument("--spreadout-lr", type=float, default=0.1)
+    parser.add_argument("--dp-clip-norm", type=float, default=1.0)
+    parser.add_argument("--dp-noise-multiplier", type=float, default=0.0)
+    parser.add_argument("--dp-anchor-noise-multiplier", type=float, default=0.0)
     return parser
 
 
@@ -48,6 +51,9 @@ def main() -> None:
         spreadout_margin=args.spreadout_margin,
         spreadout_steps=args.spreadout_steps,
         spreadout_lr=args.spreadout_lr,
+        dp_clip_norm=args.dp_clip_norm,
+        dp_noise_multiplier=args.dp_noise_multiplier,
+        dp_anchor_noise_multiplier=args.dp_anchor_noise_multiplier,
     )
     start_flower_server(
         server_address=args.server_address,

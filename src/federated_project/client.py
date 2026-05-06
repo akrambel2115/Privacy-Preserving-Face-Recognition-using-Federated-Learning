@@ -125,12 +125,6 @@ class FaceFederatedClient(NumPyClient):
         dp_anchor_noise_multiplier = float(config.get("dp_anchor_noise_multiplier", 0.0))
         embedding_init_log_every = int(config.get("embedding_init_log_every", 0))
 
-        if secure_aggregation and (dp_noise_multiplier != 0.0 or dp_anchor_noise_multiplier != 0.0):
-            raise NotImplementedError(
-                "DP is not yet compatible with the SecAgg+ execution path. "
-                "Disable secure_aggregation when enabling DP."
-            )
-
         train_metrics = client_train(
             model=self.model,
             dataloader=self.train_loader,
@@ -153,6 +147,8 @@ class FaceFederatedClient(NumPyClient):
                 client_id=self.client_id,
                 selected_clients=selected_clients,
                 previous_embedding_matrix=previous_embedding_matrix,
+                n_local_samples=len(self.train_loader.dataset),
+                dp_anchor_noise_multiplier=dp_anchor_noise_multiplier,
             )
             return updated_parameters, 1, {"secure_aggregation": True}
 

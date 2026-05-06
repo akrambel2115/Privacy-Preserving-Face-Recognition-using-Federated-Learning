@@ -45,6 +45,17 @@ spreadout-steps = 1
 spreadout-lr = 0.1
 accept-failures = false
 
+# Optional device override for clients (e.g., "cpu", "cuda").
+device = ""
+
+# Local DP (client-side) settings.
+dp-clip-norm = 1.0
+dp-noise-multiplier = 0.0
+dp-anchor-noise-multiplier = 0.0
+
+# Optional: when set, the SecAgg+ ServerApp saves a final checkpoint here.
+checkpoint-path = ""
+
 # SecAgg+ protocol parameters.
 num-shares = 3
 reconstruction-threshold = 2

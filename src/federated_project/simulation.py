@@ -33,6 +33,23 @@ class SimulationRoundResult:
     spreadout_loss: float
 
 
+def _sorted_client_names(data_dir: str) -> list[str]:
+    """Return stable, human-readable class/client names for a dataset root.
+
+    The simulator expects a multi-person directory layout where each immediate
+    subdirectory is a person/class (i.e., a simulated federated client).
+    """
+    root = Path(data_dir)
+    if not root.exists():
+        raise FileNotFoundError(f"Dataset root not found: '{data_dir}'")
+
+    return sorted(
+        entry.name
+        for entry in root.iterdir()
+        if entry.is_dir() and not entry.name.startswith(".")
+    )
+
+
 def run_simulation(
     data_dir: str,
     num_rounds: int = 3,
@@ -52,6 +69,7 @@ def run_simulation(
 ) -> list[SimulationRoundResult]:
     """Run the same client/server algorithm locally without Flower networking."""
     random.seed(seed)
+    torch.manual_seed(seed)
 
     class_names = _sorted_client_names(data_dir)
     num_clients = get_num_classes(data_dir)
@@ -128,6 +146,32 @@ def run_simulation(
                 train_loss=metrics["train_loss"],
                 spreadout_loss=metrics["spreadout_loss"],
             )
+        )
+
+    if checkpoint_path:
+        checkpoint_file = Path(checkpoint_path)
+        checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "created_at": datetime.utcnow().isoformat() + "Z",
+                "class_names": class_names,
+                "num_clients": num_clients,
+                "pretrained": pretrained,
+                "feature_extractor_state_dict": global_model.feature_extractor.state_dict(),
+                "W_matrix": global_model.W_matrix.detach().cpu(),
+                "seed": seed,
+                "num_rounds": num_rounds,
+                "fraction_fit": fraction_fit,
+                "batch_size": batch_size,
+                "local_epochs": local_epochs,
+                "lr": lr,
+                "margin": margin,
+                "spreadout_strength": spreadout_strength,
+                "spreadout_margin": spreadout_margin,
+                "spreadout_steps": spreadout_steps,
+                "spreadout_lr": spreadout_lr,
+            },
+            checkpoint_file,
         )
 
     return results

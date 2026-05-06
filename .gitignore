@@ -54,6 +54,8 @@ cover/
 # Model checkpoints and training artifacts
 results/checkpoints/*.pt
 results/checkpoints/*.pth
+results/**/checkpoint.pt
+results/**/checkpoint.pth
 
 # Translations
 *.mo
@@ -166,6 +168,8 @@ dmypy.json
 # Model checkpoints and other large binary training artifacts
 results/checkpoints/*.pt
 results/checkpoints/*.pth
+results/**/checkpoint.pt
+results/**/checkpoint.pth
 
 # Pyre type checker
 .pyre/
@@ -221,3 +225,5 @@ requirements.windows.txt
 paper.pdf
 docs
 eval
+custom_test/best_run.pt
+*.pt

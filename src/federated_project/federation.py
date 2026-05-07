@@ -37,10 +37,15 @@ def create_model(
     num_clients: int,
     pretrained: str = "vggface2",
     device: str | torch.device | None = None,
+    train_backbone: bool = False,
 ) -> FedFaceModel:
     """Construct the global face model on the requested device."""
     resolved_device = device if isinstance(device, torch.device) else resolve_device(device)
-    model = FedFaceModel(num_clients=num_clients, pretrained=pretrained)
+    model = FedFaceModel(
+        num_clients=num_clients,
+        pretrained=pretrained,
+        train_backbone=train_backbone,
+    )
     model.to(resolved_device)
     return model
 

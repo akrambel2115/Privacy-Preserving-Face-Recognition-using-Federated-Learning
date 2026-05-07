@@ -1,5 +1,3 @@
-# model definition
-# model definition
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,15 +8,27 @@ class FedFaceModel(nn.Module):
     The global model broadcasted to all clients.
     It contains the FaceNet feature extractor and the full classification matrix W.
     """
-    def __init__(self, num_clients, embedding_dim=512, pretrained='vggface2'):
+    def __init__(
+        self,
+        num_clients,
+        embedding_dim=512,
+        pretrained='vggface2',
+        train_backbone=False,
+    ):
         super(FedFaceModel, self).__init__()
+        self.train_backbone = train_backbone
         
         # 1. The Global Feature Extractor (f_theta)
         # We use FaceNet pre-trained on VGGFace2 to provide a robust initial embedding space.
         self.feature_extractor = InceptionResnetV1(pretrained=pretrained)
         
-        # Optional: Freeze early layers to save memory and compute on local clients.
-        self._freeze_early_layers()
+        if train_backbone:
+            # Optional fine-tuning mode: keep most of FaceNet frozen and update
+            # only the late projection layers.
+            self._freeze_early_layers()
+        else:
+            # Safer default: preserve the pretrained embedding geometry.
+            self.freeze_backbone()
         
         # 2. The Global Classification Matrix (W)
         # Shape: (C, d) where C = num_clients and d = embedding_dim.
@@ -41,6 +51,16 @@ class FedFaceModel(nn.Module):
         features = F.normalize(features, p=2, dim=1)
         
         return features
+
+    def freeze_backbone(self):
+        """Freeze the entire pretrained FaceNet feature extractor."""
+        for param in self.feature_extractor.parameters():
+            param.requires_grad = False
+        self.feature_extractor.eval()
+
+    def set_feature_extractor_eval(self):
+        """Keep BatchNorm/dropout stable while still allowing gradients."""
+        self.feature_extractor.eval()
 
     def _freeze_early_layers(self):
         """

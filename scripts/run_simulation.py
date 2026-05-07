@@ -50,6 +50,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pretrained", default="vggface2")
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--device", default=None)
+    parser.add_argument(
+        "--train-backbone",
+        action="store_true",
+        help="Fine-tune late FaceNet layers. By default the pretrained backbone is frozen.",
+    )
+    parser.add_argument(
+        "--preservation-strength",
+        type=float,
+        default=0.0,
+        help="Penalty strength for keeping fine-tuned embeddings close to pretrained FaceNet.",
+    )
+    parser.add_argument(
+        "--negative-strength",
+        type=float,
+        default=0.0,
+        help="Penalty strength for pushing images away from other client prototypes.",
+    )
+    parser.add_argument(
+        "--negative-margin",
+        type=float,
+        default=0.2,
+        help="Cosine margin used by the optional prototype-separation penalty.",
+    )
     parser.add_argument("--local-dp-enabled", action="store_true")
     parser.add_argument("--local-dp-clipping-norm", type=float, default=1.0)
     parser.add_argument("--local-dp-sensitivity", type=float, default=1.0)
@@ -94,6 +117,10 @@ def main() -> None:
         "margin": args.margin,
         "pretrained": args.pretrained,
         "num-workers": args.num_workers,
+        "train-backbone": args.train_backbone,
+        "preservation-strength": args.preservation_strength,
+        "negative-strength": args.negative_strength,
+        "negative-margin": args.negative_margin,
         "local-dp-enabled": args.local_dp_enabled,
         "local-dp-clipping-norm": args.local_dp_clipping_norm,
         "local-dp-sensitivity": args.local_dp_sensitivity,

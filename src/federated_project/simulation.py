@@ -49,6 +49,10 @@ def run_simulation(
     seed: int = 42,
     device: str | None = None,
     checkpoint_path: str | None = None,
+    train_backbone: bool = False,
+    preservation_strength: float = 0.0,
+    negative_strength: float = 0.0,
+    negative_margin: float = 0.2,
 ) -> list[SimulationRoundResult]:
     """Run the same client/server algorithm locally without Flower networking."""
     random.seed(seed)
@@ -60,6 +64,7 @@ def run_simulation(
         num_clients=num_clients,
         pretrained=pretrained,
         device=resolved_device,
+        train_backbone=train_backbone,
     )
     client_loaders = partition_dataset_by_client(
         data_dir=data_dir,
@@ -83,8 +88,18 @@ def run_simulation(
                 num_clients=num_clients,
                 pretrained=pretrained,
                 device=resolved_device,
+                train_backbone=train_backbone,
             )
             set_global_parameters(local_model, global_parameters)
+            reference_model = None
+            if train_backbone and preservation_strength > 0.0:
+                reference_model = create_model(
+                    num_clients=num_clients,
+                    pretrained=pretrained,
+                    device=resolved_device,
+                    train_backbone=False,
+                )
+                reference_model.eval()
 
             train_metrics = client_train(
                 model=local_model,
@@ -95,6 +110,10 @@ def run_simulation(
                 lr=lr,
                 margin=margin,
                 device=resolved_device,
+                reference_model=reference_model,
+                preservation_strength=preservation_strength,
+                negative_strength=negative_strength,
+                negative_margin=negative_margin,
             )
 
             payload = get_client_update_parameters(local_model, client_id)
@@ -131,3 +150,12 @@ def run_simulation(
         )
 
     return results
+
+
+def _sorted_client_names(data_dir: str) -> list[str]:
+    root = Path(data_dir)
+    return sorted(
+        entry.name
+        for entry in root.iterdir()
+        if entry.is_dir() and not entry.name.startswith(".")
+    )

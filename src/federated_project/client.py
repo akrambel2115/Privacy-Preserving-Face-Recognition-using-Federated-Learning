@@ -81,6 +81,10 @@ class FaceFederatedClient(NumPyClient):
         num_workers: int = 0,
         device: str | None = None,
         secure_aggregation: bool = False,
+        train_backbone: bool = False,
+        preservation_strength: float = 0.0,
+        negative_strength: float = 0.0,
+        negative_margin: float = 0.2,
     ) -> None:
         self.client_id = client_id
         self.data_dir = data_dir
@@ -89,12 +93,27 @@ class FaceFederatedClient(NumPyClient):
         self.margin = margin
         self.device = resolve_device(device)
         self.secure_aggregation = secure_aggregation
+        self.train_backbone = train_backbone
+        self.preservation_strength = preservation_strength
+        self.negative_strength = negative_strength
+        self.negative_margin = negative_margin
 
         self.model = create_model(
             num_clients=num_clients,
             pretrained=pretrained,
             device=self.device,
+            train_backbone=train_backbone,
         )
+        self.reference_model = None
+        if train_backbone and preservation_strength > 0.0 and pretrained is not None:
+            self.reference_model = create_model(
+                num_clients=num_clients,
+                pretrained=pretrained,
+                device=self.device,
+                train_backbone=False,
+            )
+            self.reference_model.eval()
+
         embedding_key = self._embedding_key()
         if embedding_key in _LOCAL_CLIENT_EMBEDDINGS:
             self.model.W_matrix.data[client_id] = _LOCAL_CLIENT_EMBEDDINGS[
@@ -139,6 +158,11 @@ class FaceFederatedClient(NumPyClient):
         local_epochs = int(config.get("local_epochs", self.local_epochs))
         learning_rate = float(config.get("lr", self.lr))
         margin = float(config.get("margin", self.margin))
+        preservation_strength = float(
+            config.get("preservation_strength", self.preservation_strength)
+        )
+        negative_strength = float(config.get("negative_strength", self.negative_strength))
+        negative_margin = float(config.get("negative_margin", self.negative_margin))
         secure_aggregation = self.secure_aggregation or bool(
             config.get("secure_aggregation", False)
         )
@@ -157,6 +181,10 @@ class FaceFederatedClient(NumPyClient):
             lr=learning_rate,
             margin=margin,
             device=self.device,
+            reference_model=self.reference_model,
+            preservation_strength=preservation_strength,
+            negative_strength=negative_strength,
+            negative_margin=negative_margin,
         )
 
         if secure_aggregation:
@@ -171,6 +199,9 @@ class FaceFederatedClient(NumPyClient):
         return updated_parameters, num_samples, {
             "client_id": self.client_id,
             "loss": float(train_metrics["loss"]),
+            "positive_loss": float(train_metrics["positive_loss"]),
+            "preservation_loss": float(train_metrics["preservation_loss"]),
+            "negative_loss": float(train_metrics["negative_loss"]),
         }
 
     def evaluate(
@@ -279,6 +310,10 @@ def client_fn(context: Context) -> fl.client.Client:
         num_workers=int(_run_config_value(context, "num-workers", 0)),
         device=_run_config_value(context, "device", None),
         secure_aggregation=True,
+        train_backbone=_run_config_bool(context, "train-backbone", False),
+        preservation_strength=float(_run_config_value(context, "preservation-strength", 0.0)),
+        negative_strength=float(_run_config_value(context, "negative-strength", 0.0)),
+        negative_margin=float(_run_config_value(context, "negative-margin", 0.2)),
     ).to_client()
 
 

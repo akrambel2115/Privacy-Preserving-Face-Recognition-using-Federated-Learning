@@ -40,6 +40,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pretrained-list", default="vggface2")
     parser.add_argument("--device", default=None)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--train-backbone", action="store_true")
+    parser.add_argument("--preservation-strength", type=float, default=0.0)
+    parser.add_argument("--negative-strength", type=float, default=0.0)
+    parser.add_argument("--negative-margin", type=float, default=0.2)
     parser.add_argument("--local-dp-enabled", action="store_true")
     parser.add_argument("--local-dp-clipping-norm", type=float, default=1.0)
     parser.add_argument("--local-dp-sensitivity", type=float, default=1.0)
@@ -102,6 +106,12 @@ def _run_secure_trial(args: argparse.Namespace, config: dict[str, Any]) -> None:
         str(config["margin"]),
         "--pretrained",
         str(config["pretrained"]),
+        "--preservation-strength",
+        str(args.preservation_strength),
+        "--negative-strength",
+        str(args.negative_strength),
+        "--negative-margin",
+        str(args.negative_margin),
         "--local-dp-clipping-norm",
         str(args.local_dp_clipping_norm),
         "--local-dp-sensitivity",
@@ -113,6 +123,8 @@ def _run_secure_trial(args: argparse.Namespace, config: dict[str, Any]) -> None:
     ]
     if args.device is not None:
         command.extend(["--device", args.device])
+    if args.train_backbone:
+        command.append("--train-backbone")
     if args.local_dp_enabled:
         command.append("--local-dp-enabled")
     if args.no_stream:

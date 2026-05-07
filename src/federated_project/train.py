@@ -24,6 +24,18 @@ from typing import Optional
 
 
 # ---------------------------------------------------------------------------
+# Feature-extractor mode helpers
+# ---------------------------------------------------------------------------
+
+def keep_feature_extractor_eval(model: nn.Module) -> None:
+    """Prevent BatchNorm/dropout drift in the pretrained FaceNet backbone."""
+    if hasattr(model, "set_feature_extractor_eval"):
+        model.set_feature_extractor_eval()
+    elif hasattr(model, "feature_extractor"):
+        model.feature_extractor.eval()
+
+
+# ---------------------------------------------------------------------------
 # Loss function
 # ---------------------------------------------------------------------------
 
@@ -63,6 +75,38 @@ def positive_only_loss(
     return loss
 
 
+def prototype_separation_loss(
+    features: torch.Tensor,
+    embedding_matrix: torch.Tensor,
+    client_id: int,
+    margin: float = 0.2,
+) -> torch.Tensor:
+    """Penalize high similarity to other clients' prototype embeddings."""
+    if embedding_matrix.size(0) < 2:
+        return features.new_tensor(0.0)
+
+    normalized_embeddings = F.normalize(embedding_matrix, p=2, dim=1)
+    negative_mask = torch.ones(
+        normalized_embeddings.size(0),
+        dtype=torch.bool,
+        device=normalized_embeddings.device,
+    )
+    negative_mask[client_id] = False
+    negative_embeddings = normalized_embeddings[negative_mask]
+    similarities = features @ negative_embeddings.T
+    violations = torch.clamp(similarities - margin, min=0.0)
+    return (violations ** 2).mean()
+
+
+def preservation_loss(
+    features: torch.Tensor,
+    reference_features: torch.Tensor,
+) -> torch.Tensor:
+    """Keep fine-tuned embeddings close to the original pretrained space."""
+    cosine_similarity = torch.sum(features * reference_features, dim=1)
+    return (1.0 - cosine_similarity).mean()
+
+
 # ---------------------------------------------------------------------------
 # Mean Feature Initialization
 # ---------------------------------------------------------------------------
@@ -95,6 +139,7 @@ def initialize_client_embedding(
         device:     Torch device to run inference on.
     """
     model.eval()
+    keep_feature_extractor_eval(model)
 
     embedding_sum = None
     num_samples = 0
@@ -131,6 +176,10 @@ def train_one_round(
     margin: float = 0.5,
     device: torch.device = torch.device("cpu"),
     optimizer: Optional[torch.optim.Optimizer] = None,
+    reference_model: Optional[nn.Module] = None,
+    preservation_strength: float = 0.0,
+    negative_strength: float = 0.0,
+    negative_margin: float = 0.2,
 ) -> dict:
     """
     Perform one federated communication round of **local** training.
@@ -163,6 +212,10 @@ def train_one_round(
             }
     """
     model.train()
+    keep_feature_extractor_eval(model)
+    if reference_model is not None:
+        reference_model.eval()
+        keep_feature_extractor_eval(reference_model)
 
     # ---- build optimiser if not supplied --------------------------------
     if optimizer is None:
@@ -176,10 +229,16 @@ def train_one_round(
 
     # ---- local training loop -------------------------------------------
     epoch_loss = 0.0
+    epoch_positive_loss = 0.0
+    epoch_preservation_loss = 0.0
+    epoch_negative_loss = 0.0
     epoch_samples = 0
 
     for _epoch in range(local_epochs):
         running_loss = 0.0
+        running_positive_loss = 0.0
+        running_preservation_loss = 0.0
+        running_negative_loss = 0.0
         running_samples = 0
 
         for images, _ in dataloader:
@@ -195,23 +254,54 @@ def train_one_round(
             w_i = F.normalize(model.W_matrix[client_id], p=2, dim=0)
 
             # 3. Compute positive-only squared hinge loss
-            loss = positive_only_loss(features, w_i, margin=margin)
+            positive_loss = positive_only_loss(features, w_i, margin=margin)
+            loss = positive_loss
+
+            preserve_loss = features.new_tensor(0.0)
+            if preservation_strength > 0.0 and reference_model is not None:
+                with torch.no_grad():
+                    reference_features = reference_model(images)
+                preserve_loss = preservation_loss(features, reference_features)
+                loss = loss + preservation_strength * preserve_loss
+
+            negative_loss = features.new_tensor(0.0)
+            if negative_strength > 0.0:
+                negative_loss = prototype_separation_loss(
+                    features=features,
+                    embedding_matrix=model.W_matrix,
+                    client_id=client_id,
+                    margin=negative_margin,
+                )
+                loss = loss + negative_strength * negative_loss
 
             # 4. Back-propagate and step
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            keep_feature_extractor_eval(model)
 
             running_loss += loss.item() * batch_size
+            running_positive_loss += positive_loss.item() * batch_size
+            running_preservation_loss += preserve_loss.item() * batch_size
+            running_negative_loss += negative_loss.item() * batch_size
             running_samples += batch_size
 
         epoch_loss = running_loss
+        epoch_positive_loss = running_positive_loss
+        epoch_preservation_loss = running_preservation_loss
+        epoch_negative_loss = running_negative_loss
         epoch_samples = running_samples
 
     avg_loss = epoch_loss / max(epoch_samples, 1)
+    avg_positive_loss = epoch_positive_loss / max(epoch_samples, 1)
+    avg_preservation_loss = epoch_preservation_loss / max(epoch_samples, 1)
+    avg_negative_loss = epoch_negative_loss / max(epoch_samples, 1)
 
     return {
         "loss": avg_loss,
+        "positive_loss": avg_positive_loss,
+        "preservation_loss": avg_preservation_loss,
+        "negative_loss": avg_negative_loss,
         "num_samples": epoch_samples,
     }
 
@@ -229,6 +319,10 @@ def client_train(
     lr: float = 1e-3,
     margin: float = 0.5,
     device: torch.device = torch.device("cpu"),
+    reference_model: Optional[nn.Module] = None,
+    preservation_strength: float = 0.0,
+    negative_strength: float = 0.0,
+    negative_margin: float = 0.2,
 ) -> dict:
     """
     Complete client-side routine for a single communication round.
@@ -265,6 +359,10 @@ def client_train(
         lr=lr,
         margin=margin,
         device=device,
+        reference_model=reference_model,
+        preservation_strength=preservation_strength,
+        negative_strength=negative_strength,
+        negative_margin=negative_margin,
     )
 
     return results

@@ -54,12 +54,14 @@ class SpreadoutFedAvg(FedAvg):
         spreadout_steps: int = 1,
         spreadout_lr: float = 0.1,
         secure_aggregation: bool = False,
+        train_backbone: bool = False,
         **kwargs: object,
     ) -> None:
         self.model = create_model(
             num_clients=num_clients,
             pretrained=pretrained,
             device="cpu",
+            train_backbone=train_backbone,
         )
         self.spreadout_strength = spreadout_strength
         self.spreadout_margin = spreadout_margin
@@ -149,6 +151,9 @@ def build_fit_config_fn(
     local_epochs: int,
     learning_rate: float,
     margin: float,
+    preservation_strength: float,
+    negative_strength: float,
+    negative_margin: float,
 ) -> Callable[[int], dict[str, Scalar]]:
     """Create the configuration callback sent by Flower before each round."""
 
@@ -158,6 +163,9 @@ def build_fit_config_fn(
             "local_epochs": local_epochs,
             "lr": learning_rate,
             "margin": margin,
+            "preservation_strength": preservation_strength,
+            "negative_strength": negative_strength,
+            "negative_margin": negative_margin,
         }
 
     return fit_config
@@ -206,6 +214,10 @@ def create_server_strategy(
     spreadout_lr: float = 0.1,
     accept_failures: bool = False,
     secure_aggregation: bool = False,
+    train_backbone: bool = False,
+    preservation_strength: float = 0.0,
+    negative_strength: float = 0.0,
+    negative_margin: float = 0.2,
 ) -> SpreadoutFedAvg:
     """Create the Flower strategy with sensible defaults for this project."""
     return SpreadoutFedAvg(
@@ -220,6 +232,9 @@ def create_server_strategy(
             local_epochs=local_epochs,
             learning_rate=learning_rate,
             margin=margin,
+            preservation_strength=preservation_strength,
+            negative_strength=negative_strength,
+            negative_margin=negative_margin,
         ),
         fit_metrics_aggregation_fn=weighted_average_metrics,
         spreadout_strength=spreadout_strength,
@@ -228,6 +243,7 @@ def create_server_strategy(
         spreadout_lr=spreadout_lr,
         accept_failures=accept_failures,
         secure_aggregation=secure_aggregation,
+        train_backbone=train_backbone,
     )
 
 
@@ -281,6 +297,10 @@ def main(grid: Grid, context: Context) -> None:
         spreadout_lr=float(_run_config_value(context, "spreadout-lr", 0.1)),
         accept_failures=_run_config_bool(context, "accept-failures", False),
         secure_aggregation=True,
+        train_backbone=_run_config_bool(context, "train-backbone", False),
+        preservation_strength=float(_run_config_value(context, "preservation-strength", 0.0)),
+        negative_strength=float(_run_config_value(context, "negative-strength", 0.0)),
+        negative_margin=float(_run_config_value(context, "negative-margin", 0.2)),
     )
 
     legacy_context = LegacyContext(

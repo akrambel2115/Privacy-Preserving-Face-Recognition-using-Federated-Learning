@@ -9,7 +9,10 @@ from pathlib import Path
 
 import torch
 
-from federated_project.dataset import get_num_classes, partition_dataset_by_client
+from federated_project.dataset import (
+    get_num_classes,
+    partition_dataset_by_client,
+)
 from federated_project.federation import (
     ClientUpdate,
     aggregate_client_updates,
@@ -52,22 +55,32 @@ def _sorted_client_names(data_dir: str) -> list[str]:
 
 def run_simulation(
     data_dir: str,
-    num_rounds: int = 3,
+    num_rounds: int = 200,
     fraction_fit: float = 1.0,
     batch_size: int = 16,
     local_epochs: int = 1,
     lr: float = 1e-3,
-    margin: float = 0.5,
+    margin: float = 0.9,
     pretrained: str = "vggface2",
-    spreadout_strength: float = 0.0,
+    spreadout_strength: float = 10.0,
     spreadout_margin: float = 0.35,
     spreadout_steps: int = 1,
-    spreadout_lr: float = 0.5,
+    spreadout_lr: float = 1.0,
     seed: int = 42,
     device: str | None = None,
     checkpoint_path: str | None = None,
+    freeze_backbone: bool = False,
 ) -> list[SimulationRoundResult]:
-    """Run the same client/server algorithm locally without Flower networking."""
+    """Run the same client/server algorithm locally without Flower networking.
+
+    Defaults follow the FedFace paper (Section 4.1):
+      - margin = 0.9
+      - lr = 1e-3
+      - num_rounds = 200
+      - spreadout_strength (lambda) = 10.0
+      - one server-side spreadout step per round (steps=1, lr=1.0)
+      - full backbone updates (freeze_backbone=False)
+    """
     random.seed(seed)
     torch.manual_seed(seed)
 
@@ -78,14 +91,25 @@ def run_simulation(
         num_clients=num_clients,
         pretrained=pretrained,
         device=resolved_device,
+        freeze_backbone=freeze_backbone,
     )
-    client_loaders = partition_dataset_by_client(
+
+    # Two parallel partitionings of the same data:
+    #   - train_loaders: with augmentations (used during local training)
+    #   - init_loaders : NO augmentations (used for Mean Feature Initialization,
+    #     paper Eq. 6, which must operate on the raw client images).
+    train_loaders = partition_dataset_by_client(
         data_dir=data_dir,
         train=True,
         batch_size=batch_size,
     )
+    init_loaders = partition_dataset_by_client(
+        data_dir=data_dir,
+        train=False,
+        batch_size=batch_size,
+    )
 
-    client_ids = sorted(client_loaders.keys())
+    client_ids = sorted(train_loaders.keys())
     sampled_clients = max(1, int(round(len(client_ids) * fraction_fit)))
     sampled_clients = min(len(client_ids), sampled_clients)
 
@@ -101,18 +125,23 @@ def run_simulation(
                 num_clients=num_clients,
                 pretrained=pretrained,
                 device=resolved_device,
+                freeze_backbone=freeze_backbone,
             )
             set_global_parameters(local_model, global_parameters)
 
             train_metrics = client_train(
                 model=local_model,
-                dataloader=client_loaders[client_id],
+                dataloader=train_loaders[client_id],
                 client_id=client_id,
                 round_num=round_idx,
                 local_epochs=local_epochs,
                 lr=lr,
                 margin=margin,
                 device=resolved_device,
+                # Pass the un-augmented loader for Mean Feature Initialization
+                # so that the round-0 anchor (paper Eq. 6) is the true mean
+                # of f_theta_0 over the client's raw images.
+                init_dataloader=init_loaders[client_id],
             )
 
             payload = get_client_update_parameters(local_model, client_id)
@@ -170,6 +199,7 @@ def run_simulation(
                 "spreadout_margin": spreadout_margin,
                 "spreadout_steps": spreadout_steps,
                 "spreadout_lr": spreadout_lr,
+                "freeze_backbone": freeze_backbone,
             },
             checkpoint_file,
         )

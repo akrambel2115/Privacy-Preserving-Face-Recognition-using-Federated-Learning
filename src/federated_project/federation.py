@@ -38,10 +38,19 @@ def create_model(
     num_clients: int,
     pretrained: str = "vggface2",
     device: str | torch.device | None = None,
+    freeze_backbone: bool = False,
 ) -> FedFaceModel:
-    """Construct the global face model on the requested device."""
+    """Construct the global face model on the requested device.
+
+    ``freeze_backbone`` defaults to False to match the FedFace paper, which
+    updates the full backbone (Algorithm 1, line 6).
+    """
     resolved_device = device if isinstance(device, torch.device) else resolve_device(device)
-    model = FedFaceModel(num_clients=num_clients, pretrained=pretrained)
+    model = FedFaceModel(
+        num_clients=num_clients,
+        pretrained=pretrained,
+        freeze_backbone=freeze_backbone,
+    )
     model.to(resolved_device)
     return model
 
@@ -249,7 +258,15 @@ def spreadout_regularization_loss(
     embedding_matrix: torch.Tensor,
     margin: float = 0.35,
 ) -> torch.Tensor:
-    """Penalize pairs of client embeddings that become too similar."""
+    """Penalize pairs of client embeddings whose cosine similarity exceeds ``margin``.
+
+    Reduction note: we use ``.mean()`` over off-diagonal pairs rather than
+    the literal sum from the paper's Eq. 9. The paper tuned ``lambda = 10``
+    against a 1000-client setup (~1M off-diagonal pairs); using sum at low
+    client counts (e.g. C=17, ~272 pairs) would scale the per-anchor force
+    by orders of magnitude. Mean-reduction with the paper's numerical lambda
+    keeps the per-anchor force in the same ballpark across client counts.
+    """
     if embedding_matrix.size(0) < 2:
         return embedding_matrix.new_tensor(0.0)
 

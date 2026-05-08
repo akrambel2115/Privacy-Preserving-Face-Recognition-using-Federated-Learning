@@ -196,9 +196,9 @@ def load_client_dataset(
         dataset,
         batch_size=batch_size,
         shuffle=train,
-        num_workers=num_workers,
+        num_workers=0,
         pin_memory=torch.cuda.is_available(),
-        drop_last=False,
+        drop_last=train,
     )
 
 
@@ -230,9 +230,9 @@ def load_full_dataset(
         dataset,
         batch_size=batch_size,
         shuffle=train,
-        num_workers=num_workers,
+        num_workers=0,
         pin_memory=torch.cuda.is_available(),
-        drop_last=False,
+        drop_last=train,
     )
 
 
@@ -284,9 +284,9 @@ def partition_dataset_by_client(
             dataset,
             batch_size=batch_size,
             shuffle=train,
-            num_workers=num_workers,
+            num_workers=0,
             pin_memory=torch.cuda.is_available(),
-            drop_last=False,
+            drop_last=train,
         )
 
     return client_loaders

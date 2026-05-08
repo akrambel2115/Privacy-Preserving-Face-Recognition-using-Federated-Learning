@@ -433,7 +433,12 @@ def compute_tar_at_far(
         if not isinstance(tensor, torch.Tensor):
             raise TypeError("transform must return a torch.Tensor")
         tensor = tensor.unsqueeze(0).to(resolved_device)
-        vec = model(tensor).squeeze(0).detach().cpu()
+        # Use feature_extractor directly — model() goes through FedFaceModel.forward
+        # which may return W_matrix projections instead of raw embeddings, causing
+        # all similarity scores to be identical and TAR@FAR to be degenerate.
+        raw = model.feature_extractor(tensor).squeeze(0).detach().cpu()
+        import torch.nn.functional as F_local
+        vec = F_local.normalize(raw, p=2, dim=0)
         embedding_cache[path] = vec
         return vec
 
@@ -456,50 +461,45 @@ def compute_tar_at_far(
     if genuine.size == 0 or impostor.size == 0:
         raise ValueError("Pairs must include both genuine and impostor examples")
 
-    # Candidate thresholds: sorted unique scores
-    thresholds = np.unique(scores_np)
-    thresholds.sort()
+    # Candidate thresholds swept from HIGH to LOW so that FAR is monotonically
+    # increasing and TAR is monotonically increasing as threshold decreases.
+    # This matches the standard ROC convention: at threshold=-inf everyone is
+    # accepted (FAR=1, TAR=1); at threshold=+inf nobody is accepted (FAR=0, TAR=0).
+    thresholds = np.unique(scores_np)[::-1]   # descending: high → low
 
     far_values = []
     tar_values = []
 
     for t in thresholds:
+        # "accept" = score >= t
         far = float(np.mean(impostor >= t))
         tar = float(np.mean(genuine >= t))
         far_values.append(far)
         tar_values.append(tar)
 
-    far_arr = np.asarray(far_values, dtype=np.float64)
-    tar_arr = np.asarray(tar_values, dtype=np.float64)
+    far_arr = np.asarray(far_values, dtype=np.float64)   # monotone increasing
+    tar_arr = np.asarray(tar_values, dtype=np.float64)   # monotone increasing
 
-    # Find where FAR crosses the target
-    below = np.where(far_arr <= far_target)[0]
-    above = np.where(far_arr >= far_target)[0]
+    # Find the bracket [i, i+1] where FAR crosses far_target from below.
+    # far_arr is increasing, so searchsorted gives us the first index where
+    # far_arr[idx] >= far_target.
+    idx = int(np.searchsorted(far_arr, far_target, side="left"))
 
-    if below.size == 0 and above.size == 0:
+    if idx == 0:
+        # FAR is already >= far_target at the tightest threshold: TAR is minimal
+        return float(tar_arr[0])
+
+    if idx >= len(far_arr):
+        # FAR never reaches far_target even at the most permissive threshold
         return 0.0
 
-    if above.size == 0:
-        # FAR never reaches target (always below): return 0.0 per spec
-        return 0.0
-
-    if below.size == 0:
-        # FAR always above target: return 1.0 per spec
-        return 1.0
-
-    lo = below[-1]
-    hi = above[0]
-
-    if lo == hi:
-        return float(tar_arr[lo])
-
-    far_lo, far_hi = float(far_arr[lo]), float(far_arr[hi])
-    tar_lo, tar_hi = float(tar_arr[lo]), float(tar_arr[hi])
+    # Linear interpolation between adjacent bracket points
+    far_lo, far_hi = float(far_arr[idx - 1]), float(far_arr[idx])
+    tar_lo, tar_hi = float(tar_arr[idx - 1]), float(tar_arr[idx])
 
     if far_hi == far_lo:
         return float(tar_hi)
 
-    # Linear interpolation
     alpha = (far_target - far_lo) / (far_hi - far_lo)
     return float(tar_lo + (tar_hi - tar_lo) * alpha)
 

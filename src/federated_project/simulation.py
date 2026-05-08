@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import torch
 
 from federated_project.dataset import (
@@ -14,12 +15,13 @@ from federated_project.dataset import (
     partition_dataset_by_client,
 )
 from federated_project.federation import (
-    ClientUpdate,
-    aggregate_client_updates,
+    apply_spreadout_regularization,
     create_model,
     get_client_update_parameters,
     get_global_parameters,
     resolve_device,
+    set_client_embedding,
+    set_feature_extractor_parameters,
     set_global_parameters,
     split_client_update_parameters,
 )
@@ -116,17 +118,28 @@ def run_simulation(
     results: list[SimulationRoundResult] = []
     global_parameters = get_global_parameters(global_model)
 
+    # Reuse a single local model to avoid allocating one per client per round.
+    local_model = create_model(
+        num_clients=num_clients,
+        pretrained=pretrained,
+        device=resolved_device,
+        freeze_backbone=freeze_backbone,
+    )
+
     for round_idx in range(num_rounds):
         active_clients = sorted(random.sample(client_ids, sampled_clients))
-        client_updates: list[ClientUpdate] = []
+
+        # -- Incremental aggregation: accumulate weighted backbone sum
+        # instead of storing all client backbone copies in RAM. ----------
+        backbone_sum: list[np.ndarray] | None = None
+        int_buffers: list[np.ndarray] | None = None  # from largest client
+        is_floating: list[bool] | None = None
+        total_examples = 0
+        largest_n = 0
+        client_embeddings: list[tuple[int, np.ndarray]] = []
+        weighted_loss_sum = 0.0
 
         for client_id in active_clients:
-            local_model = create_model(
-                num_clients=num_clients,
-                pretrained=pretrained,
-                device=resolved_device,
-                freeze_backbone=freeze_backbone,
-            )
             set_global_parameters(local_model, global_parameters)
 
             train_metrics = client_train(
@@ -138,42 +151,79 @@ def run_simulation(
                 lr=lr,
                 margin=margin,
                 device=resolved_device,
-                # Pass the un-augmented loader for Mean Feature Initialization
-                # so that the round-0 anchor (paper Eq. 6) is the true mean
-                # of f_theta_0 over the client's raw images.
                 init_dataloader=init_loaders[client_id],
             )
 
+            n_examples = int(train_metrics["num_samples"])
             payload = get_client_update_parameters(local_model, client_id)
-            backbone_parameters, class_embedding = split_client_update_parameters(
+            backbone_params, class_embedding = split_client_update_parameters(
                 global_model,
                 payload,
             )
-            client_updates.append(
-                ClientUpdate(
-                    client_id=client_id,
-                    num_examples=int(train_metrics["num_samples"]),
-                    feature_extractor_parameters=backbone_parameters,
-                    class_embedding=class_embedding,
-                    loss=float(train_metrics["loss"]),
-                )
-            )
 
-        metrics = aggregate_client_updates(
+            # Store only the tiny embedding row + scalar metadata
+            client_embeddings.append((client_id, class_embedding))
+            weighted_loss_sum += float(train_metrics["loss"]) * n_examples
+
+            # First client: initialise accumulators
+            if backbone_sum is None:
+                is_floating = [
+                    np.issubdtype(np.asarray(a).dtype, np.floating)
+                    for a in backbone_params
+                ]
+                backbone_sum = [
+                    np.asarray(a, dtype=np.float64) * n_examples if fl
+                    else np.zeros_like(a)
+                    for a, fl in zip(backbone_params, is_floating)
+                ]
+                int_buffers = [
+                    np.asarray(a).copy() if not fl else None
+                    for a, fl in zip(backbone_params, is_floating)
+                ]
+                largest_n = n_examples
+            else:
+                for i, (a, fl) in enumerate(zip(backbone_params, is_floating)):
+                    if fl:
+                        backbone_sum[i] += np.asarray(a, dtype=np.float64) * n_examples
+                    elif n_examples > largest_n:
+                        int_buffers[i] = np.asarray(a).copy()
+                if n_examples > largest_n:
+                    largest_n = n_examples
+
+            total_examples += n_examples
+            # backbone_params goes out of scope here → memory freed
+
+        # -- Finalize round aggregation ----------------------------------
+        averaged_backbone = []
+        for i, fl in enumerate(is_floating):
+            if fl:
+                averaged_backbone.append(
+                    (backbone_sum[i] / total_examples).astype(np.float32)
+                )
+            else:
+                averaged_backbone.append(int_buffers[i])
+
+        set_feature_extractor_parameters(global_model, averaged_backbone)
+
+        for cid, emb in client_embeddings:
+            set_client_embedding(global_model, cid, emb)
+
+        spreadout_loss = apply_spreadout_regularization(
             global_model,
-            client_updates,
-            spreadout_margin=spreadout_margin,
-            spreadout_strength=spreadout_strength,
-            spreadout_steps=spreadout_steps,
-            spreadout_lr=spreadout_lr,
+            margin=spreadout_margin,
+            strength=spreadout_strength,
+            steps=spreadout_steps,
+            lr=spreadout_lr,
         )
+
         global_parameters = get_global_parameters(global_model)
+        mean_loss = weighted_loss_sum / total_examples if total_examples else 0.0
         results.append(
             SimulationRoundResult(
                 round_idx=round_idx + 1,
                 participating_clients=active_clients,
-                train_loss=metrics["train_loss"],
-                spreadout_loss=metrics["spreadout_loss"],
+                train_loss=mean_loss,
+                spreadout_loss=spreadout_loss,
             )
         )
 

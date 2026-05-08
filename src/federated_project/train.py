@@ -3,32 +3,21 @@
 # Local client training for the federated face recognition system.
 #
 # Each client trains using ONLY positive samples (their own face images).
-# The loss is a squared hinge loss with cosine similarity:
-#
-#     l_pos(f_θ(x), i) = max(0, m − w_i^T · f_θ(x))²
-#
-# where:
-#   f_θ(x) = L2-normalised feature embedding of image x
-#   w_i     = L2-normalised class embedding for client i  (row i in W)
-#   m       = cosine similarity margin (typically 0.5)
-#
-# During each communication round the client jointly updates:
-#   • θ   — the feature extractor parameters
-#   • w_i — its personal class embedding (row i of the global W matrix)
+# Loss = squared-hinge cosine: max(0, m - w_i^T f_theta(x))^2
 
 import time
+from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from typing import Optional
 
 from federated_project.dp_utils import add_gaussian_noise_inplace, compute_clipped_grad_sum
 
 
 # ---------------------------------------------------------------------------
-# Loss function
+# Loss
 # ---------------------------------------------------------------------------
 
 def positive_only_loss(
@@ -36,35 +25,9 @@ def positive_only_loss(
     class_embedding: torch.Tensor,
     margin: float = 0.5,
 ) -> torch.Tensor:
-    """
-    Compute the positive-only squared hinge loss with cosine similarity.
-
-    .. math::
-
-        l_{pos} = \\frac{1}{B} \\sum_{j=1}^{B}
-                  \\max\\bigl(0,\\; m - {w^{i}}^{\\!T} f_{\\theta}(x_j)\\bigr)^{2}
-
-    Both ``features`` and ``class_embedding`` are expected to be
-    L2-normalised so that their dot product equals cosine similarity.
-
-    Args:
-        features:        (B, d) tensor of L2-normalised image embeddings
-                         produced by the feature extractor ``f_θ(x)``.
-        class_embedding: (d,)  tensor — the L2-normalised class embedding
-                         ``w_i`` for this client.
-        margin:          Cosine-similarity margin ``m``.  The loss is zero
-                         when similarity ≥ m for every sample in the batch.
-
-    Returns:
-        Scalar loss averaged over the batch.
-    """
-    # cosine similarity per sample: (B,)
     cos_sim = torch.matmul(features, class_embedding)
-
-    # squared hinge: max(0, m - cos_sim)²
     hinge = torch.clamp(margin - cos_sim, min=0.0)
-    loss = (hinge ** 2).mean()
-    return loss
+    return (hinge ** 2).mean()
 
 
 # ---------------------------------------------------------------------------
@@ -80,34 +43,13 @@ def initialize_client_embedding(
     log_every_batches: int = 0,
     log_prefix: str = "",
 ) -> None:
-    """
-    Initialise a client's class embedding using *Mean Feature Initialization*.
-
-    .. math::
-
-        w_0^{i} = \\frac{1}{n_i} \\sum_{j=1}^{n_i} f_{\\theta_0}(x_j^{i})
-
-    This replaces the random row ``W[client_id]`` with the mean of the
-    feature embeddings extracted from the client's local images.  The
-    result is then L2-normalised to stay on the unit hypersphere.
-
-    This should be called **once** — in the first communication round —
-    before any local training takes place.
-
-    Args:
-        model:      The global ``FedFaceModel`` (already on ``device``).
-        dataloader: DataLoader over the client's positive-only images.
-        client_id:  Index of this client's row in ``model.W_matrix``.
-        device:     Torch device to run inference on.
-    """
+    """Mean Feature Initialization (paper Eq. 6)."""
     model.eval()
-
     if log_every_batches < 0:
         raise ValueError("log_every_batches must be >= 0")
 
     embedding_sum = None
     num_samples = 0
-
     t0 = time.perf_counter()
 
     if log_every_batches:
@@ -117,8 +59,8 @@ def initialize_client_embedding(
             total_batches = None
 
     for batch_idx, (images, _) in enumerate(dataloader, start=1):
-        images = images.to(device)
-        features = model(images)  # (B, d), already L2-normalised
+        images = images.to(device, non_blocking=True)
+        features = model(images)
 
         if embedding_sum is None:
             embedding_sum = features.sum(dim=0)
@@ -140,16 +82,13 @@ def initialize_client_embedding(
                     f"batch={batch_idx} samples={num_samples} sec={elapsed:.2f}"
                 )
 
-    # mean embedding — then L2-normalise
     mean_embedding = embedding_sum / num_samples
     mean_embedding = F.normalize(mean_embedding, p=2, dim=0)
-
-    # overwrite this client's row in the global W matrix
     model.W_matrix.data[client_id] = mean_embedding
 
 
 # ---------------------------------------------------------------------------
-# Single local training round
+# Local training round (sequential, per-client)
 # ---------------------------------------------------------------------------
 
 def train_one_round(
@@ -163,50 +102,32 @@ def train_one_round(
     dp_noise_multiplier: float = 0.0,
     device: torch.device = torch.device("cpu"),
     optimizer: Optional[torch.optim.Optimizer] = None,
+    use_amp: bool = False,
+    grad_scaler: Optional["torch.cuda.amp.GradScaler"] = None,
 ) -> dict:
-    """
-    Perform one federated communication round of **local** training.
+    """One federated communication round of local training.
 
-    The client jointly optimises:
-      * ``θ``   — the feature-extractor parameters (unfrozen layers)
-      * ``w_i`` — its personal class embedding (``W_matrix[client_id]``)
-
-    using the positive-only squared-hinge loss over ``local_epochs``
-    passes of the local dataset.
-
-    Args:
-        model:        The global ``FedFaceModel`` (already on ``device``).
-        dataloader:   DataLoader over the client's positive-only images.
-        client_id:    Row index of this client in ``model.W_matrix``.
-        local_epochs: Number of full passes over the local data.
-        lr:           Learning rate for the local optimiser.
-        margin:       Cosine-similarity margin for the hinge loss.
-        device:       Torch device to train on.
-        optimizer:    Optional pre-configured optimiser.  If ``None``,
-                      an ``Adam`` optimiser is created targeting the
-                      trainable feature-extractor params + ``W_matrix``.
-
-    Returns:
-        A dict with training statistics::
-
-            {
-                "loss":       float,  # average loss over the last epoch
-                "num_samples": int,   # total images seen in that epoch
-            }
+    Args (additions vs paper-faithful version):
+        use_amp:     Enable mixed-precision (fp16 forward+backward) on CUDA.
+                     The hinge loss is computed in fp32 to avoid underflow
+                     near the margin. Has no effect when device is CPU.
+                     Disabled automatically when DP is on (per-sample
+                     gradient clipping is incompatible with AMP scaling).
+        grad_scaler: Optional pre-built GradScaler. Created on demand if
+                     use_amp=True and grad_scaler is None.
     """
     model.train()
 
-    # ---- build optimiser if not supplied --------------------------------
     if optimizer is None:
-        # Only optimise parameters that require gradients (the unfrozen
-        # backbone layers) **plus** the full W_matrix parameter.
-        # (W_matrix.requires_grad is True by default since it's nn.Parameter)
-        trainable_params = [
-            p for p in model.parameters() if p.requires_grad
-        ]
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
         optimizer = torch.optim.Adam(trainable_params, lr=lr)
 
-    # ---- local training loop -------------------------------------------
+    # AMP is incompatible with our DP path (per-sample grads via autograd.grad
+    # don't compose with GradScaler scaling).
+    amp_active = bool(use_amp) and device.type == "cuda" and dp_noise_multiplier == 0.0
+    if amp_active and grad_scaler is None:
+        grad_scaler = torch.cuda.amp.GradScaler()
+
     epoch_loss = 0.0
     epoch_samples = 0
 
@@ -215,58 +136,57 @@ def train_one_round(
         running_samples = 0
 
         for images, _ in dataloader:
-            images = images.to(device)
+            images = images.to(device, non_blocking=True)
             batch_size = images.size(0)
 
-            # 1. Forward: extract L2-normalised features
-            features = model(images)  # (B, d)
-
-            # 2. Grab this client's class embedding and L2-normalise it
-            #    (we normalise every step so the embedding stays on the
-            #    unit hypersphere throughout training)
-            w_i = F.normalize(model.W_matrix[client_id], p=2, dim=0)
-
-            # 3. Compute positive-only squared hinge loss
-            #    We keep per-sample losses so we can compute per-sample clipped
-            #    gradients for DP-SGD when enabled.
-            cos_sim = torch.matmul(features, w_i)  # (B,)
-            hinge = torch.clamp(margin - cos_sim, min=0.0)
-            per_sample_losses = hinge ** 2
-            loss = per_sample_losses.mean()
-
-            # 4. Back-propagate and step
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
 
             if dp_noise_multiplier == 0.0:
-                loss.backward()
-                optimizer.step()
+                # Standard path (DP off)
+                if amp_active:
+                    with torch.autocast(device_type="cuda", dtype=torch.float16):
+                        features = model(images)
+                    # Loss in fp32: features cast back, anchor in fp32.
+                    features_fp32 = features.float()
+                    w_i = F.normalize(model.W_matrix[client_id], p=2, dim=0)
+                    cos_sim = torch.matmul(features_fp32, w_i)
+                    hinge = torch.clamp(margin - cos_sim, min=0.0)
+                    loss = (hinge ** 2).mean()
+                    grad_scaler.scale(loss).backward()
+                    grad_scaler.step(optimizer)
+                    grad_scaler.update()
+                else:
+                    features = model(images)
+                    w_i = F.normalize(model.W_matrix[client_id], p=2, dim=0)
+                    cos_sim = torch.matmul(features, w_i)
+                    hinge = torch.clamp(margin - cos_sim, min=0.0)
+                    loss = (hinge ** 2).mean()
+                    loss.backward()
+                    optimizer.step()
             else:
-                # Compute standard gradients first so that W_matrix updates remain
-                # non-DP (anchor has separate privatization at serialization time).
+                # DP path (unchanged, no AMP)
+                features = model(images)
+                w_i = F.normalize(model.W_matrix[client_id], p=2, dim=0)
+                cos_sim = torch.matmul(features, w_i)
+                hinge = torch.clamp(margin - cos_sim, min=0.0)
+                per_sample_losses = hinge ** 2
+                loss = per_sample_losses.mean()
                 loss.backward(retain_graph=True)
 
                 backbone_params = [
                     p for p in model.feature_extractor.parameters() if p.requires_grad
                 ]
-
                 clipped_sums = compute_clipped_grad_sum(
-                    per_sample_losses,
-                    backbone_params,
-                    clip_norm=dp_clip_norm,
+                    per_sample_losses, backbone_params, clip_norm=dp_clip_norm,
                 )
                 add_gaussian_noise_inplace(
-                    clipped_sums,
-                    clip_norm=dp_clip_norm,
+                    clipped_sums, clip_norm=dp_clip_norm,
                     noise_multiplier=dp_noise_multiplier,
                 )
-
-                # DP-SGD uses the noisy, clipped *mean* gradient for the optimizer.
                 for param, grad_sum in zip(backbone_params, clipped_sums):
                     param.grad = (grad_sum / float(batch_size)).to(
-                        dtype=param.dtype,
-                        device=param.device,
+                        dtype=param.dtype, device=param.device,
                     )
-
                 optimizer.step()
 
             running_loss += loss.item() * batch_size
@@ -276,11 +196,7 @@ def train_one_round(
         epoch_samples = running_samples
 
     avg_loss = epoch_loss / max(epoch_samples, 1)
-
-    return {
-        "loss": avg_loss,
-        "num_samples": epoch_samples,
-    }
+    return {"loss": avg_loss, "num_samples": epoch_samples}
 
 
 # ---------------------------------------------------------------------------
@@ -300,30 +216,9 @@ def client_train(
     device: torch.device = torch.device("cpu"),
     init_dataloader: DataLoader | None = None,
     embedding_init_log_every: int = 0,
+    use_amp: bool = False,
+    grad_scaler: Optional["torch.cuda.amp.GradScaler"] = None,
 ) -> dict:
-    """
-    Complete client-side routine for a single communication round.
-
-    On the **first** round (``round_num == 0``) this function initialises
-    the client's class embedding via Mean Feature Initialization before
-    training.  On subsequent rounds it jumps straight to local training.
-
-    This is the convenience wrapper that the Flower client should call.
-
-    Args:
-        model:        The global ``FedFaceModel`` (already on ``device``).
-        dataloader:   DataLoader over the client's positive-only images.
-        client_id:    Row index of this client in ``model.W_matrix``.
-        round_num:    Current FL communication round (0-indexed).
-        local_epochs: Number of local epochs per round.
-        lr:           Learning rate for the local optimiser.
-        margin:       Cosine-similarity margin for the hinge loss.
-        device:       Torch device.
-
-    Returns:
-        A dict with training statistics (see :func:`train_one_round`).
-    """
-    # --- First round: Mean Feature Initialization -----------------------
     if round_num == 0:
         initialize_client_embedding(
             model,
@@ -334,8 +229,7 @@ def client_train(
             log_prefix="  ",
         )
 
-    # --- Local training -------------------------------------------------
-    results = train_one_round(
+    return train_one_round(
         model=model,
         dataloader=dataloader,
         client_id=client_id,
@@ -345,6 +239,6 @@ def client_train(
         dp_clip_norm=dp_clip_norm,
         dp_noise_multiplier=dp_noise_multiplier,
         device=device,
+        use_amp=use_amp,
+        grad_scaler=grad_scaler,
     )
-
-    return results

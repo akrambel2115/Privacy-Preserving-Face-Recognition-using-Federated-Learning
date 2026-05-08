@@ -38,13 +38,15 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Iterable, Optional
+from pathlib import Path
+from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, TensorDataset
+from torchvision import transforms
 
 from federated_project.dataset import (
     FaceDataset,
@@ -54,8 +56,142 @@ from federated_project.dataset import (
 
 
 # ---------------------------------------------------------------------------
+# In-memory image cache — load ALL images once at startup, serve from RAM
+# ---------------------------------------------------------------------------
+
+# Lightweight transforms for caching: just resize, keep as tensor (no augment)
+_CACHE_RESIZE = transforms.Compose([
+    transforms.Resize((170, 170)),   # largest size used by train transform
+    transforms.ToTensor(),            # -> float32 [0,1] (C,H,W)
+])
+
+# Runtime augmentation applied ON TOP of cached tensors (no PIL needed)
+_TRAIN_TENSOR_AUGMENT = transforms.Compose([
+    transforms.RandomCrop(160),
+    transforms.RandomHorizontalFlip(p=0.5),
+    transforms.RandomRotation(degrees=10),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+])
+
+_EVAL_TENSOR_AUGMENT = transforms.Compose([
+    transforms.CenterCrop(160),
+    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+])
+
+
+class ImageCache:
+    """Pre-loads all client images into CPU tensors on first call.
+
+    Images are stored as float32 tensors resized to 170×170 (the largest
+    size needed). Random augmentation (crop, flip, rotation, jitter) is
+    applied at serve time so each epoch sees different augmentation.
+
+    Memory usage: 1000 clients × ~50 images × 170×170×3 × 4 bytes ≈ 17 GB.
+    Well within the 180 GB available on Lightning AI studios.
+    """
+
+    def __init__(self) -> None:
+        self._images: dict[int, torch.Tensor] = {}   # cid -> (N_cid, C, H, W)
+        self._loaded = False
+
+    @property
+    def loaded(self) -> bool:
+        return self._loaded
+
+    def load(self, data_dir: str, num_workers: int = 0) -> None:
+        """Load ALL images from data_dir into CPU RAM (once)."""
+        if self._loaded:
+            return
+
+        all_dirs = list_client_dirs(data_dir)
+        if not all_dirs:
+            raise FileNotFoundError(
+                f"No client subdirectories under '{data_dir}'."
+            )
+
+        t0 = time.perf_counter()
+        total_images = 0
+
+        for cid, cdir in enumerate(all_dirs):
+            ds = FaceDataset(
+                root_dir=str(cdir),
+                client_id=cid,
+                transform=None,  # we apply our own resize
+            )
+            if len(ds) == 0:
+                continue
+            # Load all images for this client into a single tensor
+            imgs = []
+            for path, _ in ds.samples:
+                image = Image.open(str(path)).convert("RGB")
+                tensor = _CACHE_RESIZE(image)   # (C, 170, 170) float32
+                imgs.append(tensor)
+            self._images[cid] = torch.stack(imgs)  # (N_cid, C, 170, 170) on CPU
+            total_images += len(imgs)
+
+        self._loaded = True
+        elapsed = time.perf_counter() - t0
+        print(
+            f"  [ImageCache] Loaded {total_images} images for "
+            f"{len(self._images)} clients into RAM in {elapsed:.1f}s"
+        )
+
+    def get_round_tensors(
+        self, active_client_ids: list[int]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return (all_images, all_client_ids) for the given clients.
+
+        Returns CPU tensors ready to be batched by a DataLoader or
+        sliced directly. Zero disk I/O.
+        """
+        image_chunks = []
+        cid_chunks = []
+        for cid in active_client_ids:
+            if cid not in self._images:
+                continue
+            client_imgs = self._images[cid]     # (N_cid, C, H, W)
+            image_chunks.append(client_imgs)
+            cid_chunks.append(
+                torch.full((client_imgs.size(0),), cid, dtype=torch.long)
+            )
+        all_images = torch.cat(image_chunks, dim=0)     # (N_total, C, H, W)
+        all_cids = torch.cat(cid_chunks, dim=0)          # (N_total,)
+        return all_images, all_cids
+
+
+# Module-level singleton cache
+_global_cache = ImageCache()
+
+
+def get_image_cache() -> ImageCache:
+    return _global_cache
+
+
+# ---------------------------------------------------------------------------
 # Combined dataset that emits (image, client_id) for many clients at once
 # ---------------------------------------------------------------------------
+
+class CachedRoundDataset(Dataset):
+    """Wraps pre-cached image tensors for one round.
+
+    Applies train/eval augmentation ON TOP of cached 170×170 tensors.
+    Serves images directly from CPU RAM — no disk I/O.
+    """
+
+    def __init__(self, images: torch.Tensor, client_ids: torch.Tensor, train: bool):
+        self.images = images        # (N, C, 170, 170)
+        self.client_ids = client_ids  # (N,)
+        self.augment = _TRAIN_TENSOR_AUGMENT if train else _EVAL_TENSOR_AUGMENT
+
+    def __len__(self) -> int:
+        return self.images.size(0)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
+        img = self.augment(self.images[idx])   # random augment each access
+        return img, int(self.client_ids[idx].item())
+
+
 
 class MultiClientDataset(Dataset):
     """Concatenated dataset over a SUBSET of clients for one round.
@@ -94,9 +230,25 @@ def build_round_loader(
 ) -> DataLoader:
     """Build one DataLoader over all images of all active clients in this round.
 
-    The yielded batches contain a mix of client_ids; the fused training
-    loop dispatches on client_id within the batch.
+    Uses the in-memory cache if loaded (zero disk I/O). Falls back to
+    disk-based loading otherwise.
     """
+    cache = get_image_cache()
+
+    if cache.loaded:
+        # Fast path: serve from RAM
+        all_images, all_cids = cache.get_round_tensors(active_client_ids)
+        ds = CachedRoundDataset(all_images, all_cids, train=train)
+        kwargs = {
+            "batch_size": batch_size,
+            "shuffle": train,
+            "num_workers": 0,       # no need for workers — data is in RAM
+            "pin_memory": torch.cuda.is_available(),
+            "drop_last": train,     # avoid BatchNorm crash on single-sample batch
+        }
+        return DataLoader(ds, **kwargs)
+
+    # Fallback: disk-based loading (used before cache is loaded)
     all_dirs = list_client_dirs(data_dir)
     if not all_dirs:
         raise FileNotFoundError(
@@ -111,7 +263,7 @@ def build_round_loader(
         "shuffle": train,
         "num_workers": int(num_workers),
         "pin_memory": torch.cuda.is_available(),
-        "drop_last": False,  # keep all samples in fused mode
+        "drop_last": train,   # avoid BatchNorm crash on single-sample last batch
     }
     if int(num_workers) > 0:
         kwargs["persistent_workers"] = False  # round loader is short-lived

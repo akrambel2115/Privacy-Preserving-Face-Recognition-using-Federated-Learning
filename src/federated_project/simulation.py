@@ -40,6 +40,7 @@ from federated_project.federation import (
 )
 from federated_project.fused_train import (
     fused_initialize_embeddings,
+    get_image_cache,
     train_round_fused,
 )
 from federated_project.train import client_train
@@ -328,6 +329,9 @@ def run_simulation(
         train_loaders = None
         init_loaders = None
         client_ids = list(range(num_clients))
+        # Pre-load ALL images into CPU RAM once — eliminates per-round disk I/O
+        cache = get_image_cache()
+        cache.load(data_dir, num_workers=num_workers)
 
     sampled_clients = max(1, int(round(len(client_ids) * fraction_fit)))
     sampled_clients = min(len(client_ids), sampled_clients)

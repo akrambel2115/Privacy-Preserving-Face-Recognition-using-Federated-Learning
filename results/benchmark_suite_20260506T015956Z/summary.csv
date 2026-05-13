@@ -1,0 +1,2 @@
+mode,sigma,epsilon,delta,tar_at_far_0001,clip_norm,num_rounds,timestamp,checkpoint
+none,0.0,inf,1e-05,0.001333,1.0,17,2026-05-06T02:26:35Z,C:\Users\louai\Desktop\Y3S2\SECURITY\PROJECTS\Privacy-Preserving-Face-Recognition-using-Federated-Learning\results\benchmark_suite_20260506T015956Z\none\sigma_0p000\checkpoint.pt

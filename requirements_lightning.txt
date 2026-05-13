@@ -1,0 +1,13 @@
+# requirements_lightning.txt
+# Minimal dependencies for Lightning AI H100 studio execution.
+# The Lightning base image already ships with PyTorch + CUDA;
+# we only install the project-specific packages.
+#
+# Usage:
+#   pip install --no-deps -r requirements_lightning.txt
+
+facenet-pytorch==2.6.0
+numpy==1.26.4
+pillow>=10.2.0
+flwr[simulation]>=1.27.0,<2.0.0
+torchvision>=0.17.2

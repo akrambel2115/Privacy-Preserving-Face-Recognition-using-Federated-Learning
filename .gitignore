@@ -51,6 +51,12 @@ coverage.xml
 .pytest_cache/
 cover/
 
+# Model checkpoints and training artifacts
+results/checkpoints/*.pt
+results/checkpoints/*.pth
+results/**/checkpoint.pt
+results/**/checkpoint.pth
+
 # Translations
 *.mo
 *.pot
@@ -159,6 +165,12 @@ venv.bak/
 .dmypy.json
 dmypy.json
 
+# Model checkpoints and other large binary training artifacts
+results/checkpoints/*.pt
+results/checkpoints/*.pth
+results/**/checkpoint.pt
+results/**/checkpoint.pth
+
 # Pyre type checker
 .pyre/
 
@@ -207,3 +219,12 @@ marimo/_lsp/
 __marimo__/
 /.idea
 /data/celebs
+celebs
+work.md
+requirements.windows.txt
+paper.pdf
+docs
+eval
+custom_test/best_run.pt
+*.pt
+dataset

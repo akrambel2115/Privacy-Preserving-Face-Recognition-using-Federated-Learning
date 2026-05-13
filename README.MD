@@ -31,6 +31,36 @@ train a shared global model while keeping raw images stored locally.
 * facenet_pytorch 
 
 
+## Secure aggregation with Flower SecAgg+
+
+The project also exposes a Flower `ServerApp`/`ClientApp` path that uses
+Flower's built-in SecAgg+ protocol. SecAgg+ masks client model updates so the
+server receives only the aggregated update, not any individual client's update.
+
+
+For this face-recognition workflow, the secure path returns a full masked model
+payload. The client's personal embedding row is encoded as a scaled delta so
+Flower's aggregate tensor reconstructs the updated global embedding matrix
+without exposing the individual transport payload to the server. Secure runs
+use equal client weighting and do not report per-client loss/sample metrics in
+the clear. Because each embedding row is owned by one client, the final global
+row should still be treated as visible model state; SecAgg+ primarily protects
+the shared backbone aggregation and update transport. The original
+`scripts/run_server.py` and `scripts/run_client.py` entrypoints still run the
+non-secure legacy Flower API.
+
+secure aggregation flow:
+
+1. The server runs a Flower ServerApp with SecAggPlusWorkflow.
+2. Each client runs a ClientApp with secaggplus_mod.
+3. During training, clients mask/encrypt their model updates before sending them.
+4. The server cannot inspect individual client updates. It only receives the unmasked aggregate after Flower completes the SecAgg+ protocol.
+5. The shared FaceNet backbone is aggregated securely across clients.
+6. For the client-specific embedding matrix, each client sends a full masked matrix payload where only its own row is changed. After aggregation, the global matrix is reconstructed without exposing each transport payload directly.
+
+- Important limitation: each embedding row still belongs to one client, so the final global row is visible as model state after aggregation
+
+
 ## The main workflow of federated learning  :
 
 1. A global model is initialized either randomly  or with a pre-trained model. 

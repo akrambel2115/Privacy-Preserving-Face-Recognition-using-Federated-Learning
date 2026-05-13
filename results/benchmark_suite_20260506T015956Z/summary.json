@@ -1,0 +1,42 @@
+{
+  "experiment_config": {
+    "best_config": "C:\\Users\\louai\\Desktop\\Y3S2\\SECURITY\\PROJECTS\\Privacy-Preserving-Face-Recognition-using-Federated-Learning\\results\\tuning\\sim_tuning_20260428_132443_best.json",
+    "best_params": {
+      "num_rounds": 17,
+      "fraction_fit": 0.9480456499617467,
+      "batch_size": 64,
+      "local_epochs": 5,
+      "lr": 0.0038211294416912265,
+      "margin": 0.109732982743667,
+      "pretrained": "vggface2",
+      "spreadout_strength": 0.4442156209414605,
+      "spreadout_margin": 0.20787883060031453,
+      "spreadout_steps": 4,
+      "spreadout_lr": 0.5910698619088539
+    },
+    "noise_multipliers": [
+      0.0,
+      0.5,
+      1.0,
+      2.0
+    ],
+    "dp_clip_norm": 1.0,
+    "delta": 1e-05,
+    "anchor_noise_multiplier": null,
+    "num_clients": 17
+  },
+  "results": [
+    {
+      "mode": "none",
+      "sigma": 0.0,
+      "epsilon": null,
+      "delta": 1e-05,
+      "tar_at_far_0001": 0.001333,
+      "clip_norm": 1.0,
+      "num_rounds": 17,
+      "timestamp": "2026-05-06T02:26:35Z",
+      "checkpoint": "C:\\Users\\louai\\Desktop\\Y3S2\\SECURITY\\PROJECTS\\Privacy-Preserving-Face-Recognition-using-Federated-Learning\\results\\benchmark_suite_20260506T015956Z\\none\\sigma_0p000\\checkpoint.pt",
+      "runtime_sec": 1598.849
+    }
+  ]
+}

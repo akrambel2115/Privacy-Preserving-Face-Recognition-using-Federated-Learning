@@ -1,0 +1,22 @@
+{
+  "study_name": "sim_tuning_20260428_132443",
+  "score_metric": "final_train_loss",
+  "score": 0.002105217584655346,
+  "params": {
+    "num_rounds": 17,
+    "fraction_fit": 0.9480456499617467,
+    "batch_size": 64,
+    "local_epochs": 5,
+    "lr": 0.0038211294416912265,
+    "margin": 0.109732982743667,
+    "pretrained": "vggface2",
+    "spreadout_strength": 0.4442156209414605,
+    "spreadout_margin": 0.20787883060031453,
+    "spreadout_steps": 4,
+    "spreadout_lr": 0.5910698619088539
+  },
+  "train_loss": 0.002105217584655346,
+  "spreadout_loss": 0.016705084592103958,
+  "trial_number": 8,
+  "total_trials_completed": 56
+}

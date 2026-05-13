@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "privacy-preserving-face-recognition-fl"
+version = "0.1.0"
+description = "Privacy-preserving face recognition using Flower federated learning"
+requires-python = ">=3.10"
+dependencies = [
+    "flwr[simulation]>=1.27.0,<2.0.0",
+    "facenet-pytorch==2.6.0",
+    "numpy==1.26.4",
+    "pillow==10.2.0",
+    "torch==2.2.2",
+    "torchvision==0.17.2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/federated_project"]
+
+[tool.flwr.app]
+publisher = "local"
+
+[tool.flwr.app.components]
+serverapp = "federated_project.server:app"
+clientapp = "federated_project.client:app"
+
+[tool.flwr.app.config]
+num-server-rounds = 3
+num-clients = 2
+data-dir = "data"
+pretrained = "vggface2"
+fraction-fit = 1.0
+min-fit-clients = 2
+min-available-clients = 2
+local-epochs = 1
+learning-rate = 0.001
+margin = 0.5
+batch-size = 16
+num-workers = 0
+spreadout-strength = 0.0
+spreadout-margin = 0.35
+spreadout-steps = 1
+spreadout-lr = 0.1
+accept-failures = false
+
+# Optional device override for clients (e.g., "cpu", "cuda").
+device = ""
+
+# Local DP (client-side) settings.
+dp-clip-norm = 1.0
+dp-noise-multiplier = 0.0
+dp-anchor-noise-multiplier = 0.0
+
+# Optional: when set, the SecAgg+ ServerApp saves a final checkpoint here.
+checkpoint-path = ""
+
+# SecAgg+ protocol parameters.
+num-shares = 3
+reconstruction-threshold = 2
+secure-max-weight = 1.0
+secure-clipping-range = 64.0
+quantization-range = 4194304
+modulus-range = 4294967296
+secure-timeout = 60.0

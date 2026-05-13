@@ -1,0 +1,46 @@
+{
+  "tar_at_far": 0.771667,
+  "far_target": 0.001,
+  "status": "baseline",
+  "error_msg": "",
+  "timestamp": "2026-05-08T03:33:40",
+  "diagnostic": {
+    "gen_mean": 0.6677,
+    "gen_std": 0.1612,
+    "imp_mean": 0.0481,
+    "imp_std": 0.1544,
+    "gap": 0.6196,
+    "n_genuine": 300,
+    "n_impostor": 300,
+    "collapsed": false
+  },
+  "train": {
+    "final_train_loss": 0.0,
+    "final_spreadout_loss": 0.0,
+    "elapsed_sec": 0.0
+  },
+  "eval": {
+    "elapsed_sec": 265.7
+  },
+  "config": {
+    "data_dir": "",
+    "num_rounds": 30,
+    "fraction_fit": 1.0,
+    "batch_size": 16,
+    "local_epochs": 1,
+    "lr": 0.0001,
+    "margin": 0.9,
+    "pretrained": "vggface2",
+    "spreadout_strength": 10.0,
+    "spreadout_margin": 0.35,
+    "spreadout_steps": 1,
+    "spreadout_lr": 1.0,
+    "freeze_backbone": true,
+    "seed": 42,
+    "pairs_file": "eval/pairs.csv",
+    "eval_image_dir": "eval/lfw-deepfunneled/lfw-deepfunneled",
+    "far_target": 0.001,
+    "device": null,
+    "collapse_gap_threshold": 0.1
+  }
+}

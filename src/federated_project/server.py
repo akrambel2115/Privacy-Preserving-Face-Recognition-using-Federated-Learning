@@ -2,20 +2,49 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 import flwr as fl
-from flwr.common import Metrics, Scalar, ndarrays_to_parameters, parameters_to_ndarrays
+import torch
+from flwr.common import (
+    Context,
+    FitIns,
+    Metrics,
+    Parameters,
+    Scalar,
+    ndarrays_to_parameters,
+    parameters_to_ndarrays,
+)
+from flwr.server import Grid, LegacyContext, ServerApp, ServerConfig
+from flwr.server.client_manager import ClientManager
 from flwr.server.client_proxy import ClientProxy
 from flwr.server.strategy import FedAvg
+from flwr.server.workflow import DefaultWorkflow, SecAggPlusWorkflow
 
 from federated_project.federation import (
     ClientUpdate,
     aggregate_client_updates,
+    apply_spreadout_regularization,
     create_model,
     get_global_parameters,
+    set_global_parameters,
     split_client_update_parameters,
 )
+
+
+def _sorted_client_names(data_dir: str, num_clients: int) -> list[str]:
+    root = Path(data_dir)
+    if root.exists():
+        names = sorted(
+            entry.name
+            for entry in root.iterdir()
+            if entry.is_dir() and not entry.name.startswith(".")
+        )
+        if names:
+            return names
+    return [f"client_{idx}" for idx in range(int(num_clients))]
 
 
 class SpreadoutFedAvg(FedAvg):
@@ -38,19 +67,46 @@ class SpreadoutFedAvg(FedAvg):
         spreadout_margin: float = 0.35,
         spreadout_steps: int = 1,
         spreadout_lr: float = 0.1,
+        secure_aggregation: bool = False,
         **kwargs: object,
     ) -> None:
-        self.model = create_model(num_clients=num_clients, pretrained=pretrained, device="cpu")
+        self.model = create_model(
+            num_clients=num_clients,
+            pretrained=pretrained,
+            device="cpu",
+        )
         self.spreadout_strength = spreadout_strength
         self.spreadout_margin = spreadout_margin
         self.spreadout_steps = spreadout_steps
         self.spreadout_lr = spreadout_lr
+        self.secure_aggregation = secure_aggregation
 
         kwargs.setdefault(
             "initial_parameters",
             ndarrays_to_parameters(get_global_parameters(self.model)),
         )
         super().__init__(**kwargs)
+
+    def configure_fit(
+        self,
+        server_round: int,
+        parameters: Parameters,
+        client_manager: ClientManager,
+    ) -> list[tuple[ClientProxy, FitIns]]:
+        """Add secure aggregation metadata after Flower samples clients."""
+        configured_clients = super().configure_fit(
+            server_round,
+            parameters,
+            client_manager,
+        )
+        if not self.secure_aggregation:
+            return configured_clients
+
+        selected_clients = len(configured_clients)
+        for _client_proxy, fit_ins in configured_clients:
+            fit_ins.config["secure_aggregation"] = True
+            fit_ins.config["secure_selected_clients"] = selected_clients
+        return configured_clients
 
     def aggregate_fit(
         self,
@@ -63,6 +119,21 @@ class SpreadoutFedAvg(FedAvg):
             return None, {}
         if failures and not self.accept_failures:
             return None, {}
+
+        if self.secure_aggregation:
+            aggregated_parameters = parameters_to_ndarrays(results[0][1].parameters)
+            set_global_parameters(self.model, aggregated_parameters)
+            spreadout_loss = apply_spreadout_regularization(
+                self.model,
+                margin=self.spreadout_margin,
+                strength=self.spreadout_strength,
+                steps=self.spreadout_steps,
+                lr=self.spreadout_lr,
+            )
+            metrics = _aggregate_secure_fit_metrics(results)
+            metrics["spreadout_loss"] = spreadout_loss
+            metrics["server_round"] = float(server_round)
+            return ndarrays_to_parameters(get_global_parameters(self.model)), metrics
 
         client_updates: list[ClientUpdate] = []
         for _client_proxy, fit_res in results:
@@ -100,6 +171,9 @@ def build_fit_config_fn(
     local_epochs: int,
     learning_rate: float,
     margin: float,
+    dp_clip_norm: float,
+    dp_noise_multiplier: float,
+    dp_anchor_noise_multiplier: float,
 ) -> Callable[[int], dict[str, Scalar]]:
     """Create the configuration callback sent by Flower before each round."""
 
@@ -109,19 +183,47 @@ def build_fit_config_fn(
             "local_epochs": local_epochs,
             "lr": learning_rate,
             "margin": margin,
+            "dp_clip_norm": dp_clip_norm,
+            "dp_noise_multiplier": dp_noise_multiplier,
+            "dp_anchor_noise_multiplier": dp_anchor_noise_multiplier,
         }
 
     return fit_config
 
 
+def _aggregate_secure_fit_metrics(
+    results: list[tuple[ClientProxy, fl.common.FitRes]],
+) -> dict[str, Scalar]:
+    weighted_losses = []
+    counted_examples = 0
+    for _client_proxy, fit_res in results:
+        metrics = fit_res.metrics
+        if "loss" not in metrics:
+            continue
+        num_samples = int(metrics.get("num_samples", fit_res.num_examples))
+        weighted_losses.append(float(metrics["loss"]) * num_samples)
+        counted_examples += num_samples
+
+    return {
+        "train_loss": (
+            float(sum(weighted_losses) / counted_examples) if counted_examples else 0.0
+        ),
+        "secure_aggregation": True,
+    }
+
+
 def weighted_average_metrics(metrics: list[tuple[int, Metrics]]) -> Metrics:
     """Average scalar client metrics so Flower can report round summaries."""
-    total_examples = sum(num_examples for num_examples, _ in metrics)
+    total_examples = sum(
+        int(client_metrics.get("num_samples", num_examples))
+        for num_examples, client_metrics in metrics
+    )
     if total_examples == 0:
         return {}
 
     losses = [
-        float(client_metrics["loss"]) * num_examples
+        float(client_metrics["loss"])
+        * int(client_metrics.get("num_samples", num_examples))
         for num_examples, client_metrics in metrics
         if "loss" in client_metrics
     ]
@@ -144,6 +246,10 @@ def create_server_strategy(
     spreadout_steps: int = 1,
     spreadout_lr: float = 0.1,
     accept_failures: bool = False,
+    secure_aggregation: bool = False,
+    dp_clip_norm: float = 1.0,
+    dp_noise_multiplier: float = 0.0,
+    dp_anchor_noise_multiplier: float = 0.0,
 ) -> SpreadoutFedAvg:
     """Create the Flower strategy with sensible defaults for this project."""
     return SpreadoutFedAvg(
@@ -158,6 +264,9 @@ def create_server_strategy(
             local_epochs=local_epochs,
             learning_rate=learning_rate,
             margin=margin,
+            dp_clip_norm=dp_clip_norm,
+            dp_noise_multiplier=dp_noise_multiplier,
+            dp_anchor_noise_multiplier=dp_anchor_noise_multiplier,
         ),
         fit_metrics_aggregation_fn=weighted_average_metrics,
         spreadout_strength=spreadout_strength,
@@ -165,6 +274,7 @@ def create_server_strategy(
         spreadout_steps=spreadout_steps,
         spreadout_lr=spreadout_lr,
         accept_failures=accept_failures,
+        secure_aggregation=secure_aggregation,
     )
 
 
@@ -179,3 +289,107 @@ def start_flower_server(
         config=fl.server.ServerConfig(num_rounds=num_rounds),
         strategy=strategy,
     )
+
+
+def _run_config_value(context: Context, key: str, default: object) -> object:
+    return context.run_config[key] if key in context.run_config else default
+
+
+def _run_config_bool(context: Context, key: str, default: bool) -> bool:
+    value = _run_config_value(context, key, default)
+    if isinstance(value, str):
+        return value.lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+app = ServerApp()
+
+
+@app.main()
+def main(grid: Grid, context: Context) -> None:
+    """Flower ServerApp entrypoint using the built-in SecAgg+ workflow."""
+    num_clients = int(_run_config_value(context, "num-clients", 2))
+    num_rounds = int(_run_config_value(context, "num-server-rounds", 3))
+
+    strategy = create_server_strategy(
+        num_clients=num_clients,
+        pretrained=str(_run_config_value(context, "pretrained", "vggface2")),
+        fraction_fit=float(_run_config_value(context, "fraction-fit", 1.0)),
+        min_fit_clients=int(_run_config_value(context, "min-fit-clients", num_clients)),
+        min_available_clients=int(
+            _run_config_value(context, "min-available-clients", num_clients)
+        ),
+        local_epochs=int(_run_config_value(context, "local-epochs", 1)),
+        learning_rate=float(_run_config_value(context, "learning-rate", 1e-3)),
+        margin=float(_run_config_value(context, "margin", 0.5)),
+        spreadout_strength=float(_run_config_value(context, "spreadout-strength", 0.0)),
+        spreadout_margin=float(_run_config_value(context, "spreadout-margin", 0.35)),
+        spreadout_steps=int(_run_config_value(context, "spreadout-steps", 1)),
+        spreadout_lr=float(_run_config_value(context, "spreadout-lr", 0.1)),
+        accept_failures=_run_config_bool(context, "accept-failures", False),
+        dp_clip_norm=float(_run_config_value(context, "dp-clip-norm", 1.0)),
+        dp_noise_multiplier=float(_run_config_value(context, "dp-noise-multiplier", 0.0)),
+        dp_anchor_noise_multiplier=float(
+            _run_config_value(context, "dp-anchor-noise-multiplier", 0.0)
+        ),
+        secure_aggregation=True,
+    )
+
+    legacy_context = LegacyContext(
+        context=context,
+        config=ServerConfig(num_rounds=num_rounds),
+        strategy=strategy,
+    )
+    clipping_range = max(
+        float(_run_config_value(context, "secure-clipping-range", 64.0)),
+        float(2 * num_clients + 1),
+    )
+    fit_workflow = SecAggPlusWorkflow(
+        num_shares=_run_config_value(context, "num-shares", 3),
+        reconstruction_threshold=_run_config_value(
+            context,
+            "reconstruction-threshold",
+            2,
+        ),
+        max_weight=float(_run_config_value(context, "secure-max-weight", 1.0)),
+        clipping_range=clipping_range,
+        quantization_range=int(_run_config_value(context, "quantization-range", 4194304)),
+        modulus_range=int(_run_config_value(context, "modulus-range", 4294967296)),
+        timeout=float(_run_config_value(context, "secure-timeout", 60.0)),
+    )
+    workflow = DefaultWorkflow(fit_workflow=fit_workflow)
+    workflow(grid, legacy_context)
+
+    checkpoint_path = str(_run_config_value(context, "checkpoint-path", ""))
+    if checkpoint_path:
+        data_dir = str(_run_config_value(context, "data-dir", "data"))
+        class_names = _sorted_client_names(data_dir=data_dir, num_clients=num_clients)
+        checkpoint_file = Path(checkpoint_path)
+        checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "created_at": datetime.utcnow().isoformat() + "Z",
+                "secure_aggregation": True,
+                "class_names": class_names,
+                "num_clients": int(num_clients),
+                "pretrained": str(_run_config_value(context, "pretrained", "vggface2")),
+                "feature_extractor_state_dict": strategy.model.feature_extractor.state_dict(),
+                "W_matrix": strategy.model.W_matrix.detach().cpu(),
+                "num_rounds": int(num_rounds),
+                "fraction_fit": float(_run_config_value(context, "fraction-fit", 1.0)),
+                "batch_size": int(_run_config_value(context, "batch-size", 16)),
+                "local_epochs": int(_run_config_value(context, "local-epochs", 1)),
+                "learning_rate": float(_run_config_value(context, "learning-rate", 1e-3)),
+                "margin": float(_run_config_value(context, "margin", 0.5)),
+                "spreadout_strength": float(_run_config_value(context, "spreadout-strength", 0.0)),
+                "spreadout_margin": float(_run_config_value(context, "spreadout-margin", 0.35)),
+                "spreadout_steps": int(_run_config_value(context, "spreadout-steps", 1)),
+                "spreadout_lr": float(_run_config_value(context, "spreadout-lr", 0.1)),
+                "dp_clip_norm": float(_run_config_value(context, "dp-clip-norm", 1.0)),
+                "dp_noise_multiplier": float(_run_config_value(context, "dp-noise-multiplier", 0.0)),
+                "dp_anchor_noise_multiplier": float(
+                    _run_config_value(context, "dp-anchor-noise-multiplier", 0.0)
+                ),
+            },
+            checkpoint_file,
+        )

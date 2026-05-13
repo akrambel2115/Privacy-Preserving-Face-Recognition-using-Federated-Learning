@@ -1,0 +1,23 @@
+{
+  "score_metric": "final_train_loss",
+  "best": {
+    "status": "ok",
+    "duration_sec": 12.424,
+    "final_round": 1,
+    "final_train_loss": 0.2744079003483057,
+    "final_spreadout_loss": 0.0007452612044289708,
+    "num_rounds": 1,
+    "fraction_fit": 0.5,
+    "batch_size": 16,
+    "local_epochs": 1,
+    "lr": 0.001,
+    "margin": 0.5,
+    "pretrained": "vggface2",
+    "spreadout_strength": 1.0,
+    "spreadout_margin": 0.35,
+    "spreadout_steps": 1,
+    "spreadout_lr": 0.1,
+    "score": 0.2744079003483057
+  },
+  "all_trials_csv": "C:\\Users\\louai\\Desktop\\Y3S2\\SECURITY\\PROJECTS\\Privacy-Preserving-Face-Recognition-using-Federated-Learning\\results\\tuning\\all_trials_20260413_231611.csv"
+}

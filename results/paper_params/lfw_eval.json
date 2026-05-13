@@ -1,0 +1,28 @@
+{
+  "checkpoint": "results\\paper_params\\checkpoint.pt",
+  "pairs_file": "eval\\pairs.csv",
+  "eval_image_dir": "eval\\lfw-deepfunneled\\lfw-deepfunneled",
+  "far_target": 0.001,
+  "tar_at_far": 1.0,
+  "num_pairs": 6000,
+  "num_genuine": 3000,
+  "num_impostor": 3000,
+  "elapsed_sec": 101.659,
+  "checkpoint_metadata": {
+    "created_at": "2026-05-08T00:45:01.185972Z",
+    "num_clients": 17.0,
+    "pretrained": "vggface2",
+    "seed": 42.0,
+    "num_rounds": 200.0,
+    "fraction_fit": 1.0,
+    "batch_size": 16.0,
+    "local_epochs": 1.0,
+    "lr": 0.001,
+    "margin": 0.9,
+    "spreadout_strength": 10.0,
+    "spreadout_margin": 0.35,
+    "spreadout_steps": 1.0,
+    "spreadout_lr": 1.0,
+    "freeze_backbone": false
+  }
+}

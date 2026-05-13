@@ -1,0 +1,2 @@
+batch_size,duration_sec,final_round,final_spreadout_loss,final_train_loss,fraction_fit,local_epochs,lr,margin,num_rounds,pretrained,score,spreadout_lr,spreadout_margin,spreadout_steps,spreadout_strength,status
+16,12.424,1,0.0007452612044289708,0.2744079003483057,0.5,1,0.001,0.5,1,vggface2,0.2744079003483057,0.1,0.35,1,1.0,ok

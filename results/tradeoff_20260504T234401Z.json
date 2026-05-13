@@ -1,0 +1,26 @@
+{
+  "experiment_config": {
+    "noise_multipliers": [
+      0.0,
+      0.5,
+      1.0,
+      2.0
+    ],
+    "clip_norm": 1.0,
+    "num_rounds": 100,
+    "delta": 1e-05,
+    "backbone": "InceptionResnetV1",
+    "embedding_dim": 512
+  },
+  "results": [
+    {
+      "noise_multiplier": 0.0,
+      "delta": 1e-05,
+      "tar_at_far_0001": 0.001333,
+      "clip_norm": 1.0,
+      "num_rounds": 100,
+      "timestamp": "2026-05-05T00:11:45Z",
+      "epsilon": null
+    }
+  ]
+}

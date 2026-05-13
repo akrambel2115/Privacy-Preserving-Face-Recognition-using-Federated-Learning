@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from federated_project.dp_utils import privatize_anchor
 from federated_project.model import FedFaceModel
 
 NDArrays = list[np.ndarray]
@@ -17,8 +18,6 @@ NDArrays = list[np.ndarray]
 
 @dataclass
 class ClientUpdate:
-    """A structured client payload used by the Flower server strategy."""
-
     client_id: int
     num_examples: int
     feature_extractor_parameters: NDArrays
@@ -27,7 +26,6 @@ class ClientUpdate:
 
 
 def resolve_device(requested_device: str | None = None) -> torch.device:
-    """Choose a torch device, defaulting to GPU when available."""
     if requested_device:
         return torch.device(requested_device)
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -37,10 +35,14 @@ def create_model(
     num_clients: int,
     pretrained: str = "vggface2",
     device: str | torch.device | None = None,
+    freeze_backbone: bool = False,
 ) -> FedFaceModel:
-    """Construct the global face model on the requested device."""
     resolved_device = device if isinstance(device, torch.device) else resolve_device(device)
-    model = FedFaceModel(num_clients=num_clients, pretrained=pretrained)
+    model = FedFaceModel(
+        num_clients=num_clients,
+        pretrained=pretrained,
+        freeze_backbone=freeze_backbone,
+    )
     model.to(resolved_device)
     return model
 
@@ -54,12 +56,10 @@ def _to_numpy(tensor: torch.Tensor) -> np.ndarray:
 
 
 def num_feature_tensors(model: FedFaceModel) -> int:
-    """Return the number of tensors in the FaceNet backbone state."""
     return len(_ordered_feature_state(model))
 
 
 def get_feature_extractor_parameters(model: FedFaceModel) -> NDArrays:
-    """Serialize the feature extractor only."""
     return [_to_numpy(tensor) for tensor in _ordered_feature_state(model).values()]
 
 
@@ -67,7 +67,11 @@ def set_feature_extractor_parameters(
     model: FedFaceModel,
     parameters: Sequence[np.ndarray],
 ) -> None:
-    """Load serialized backbone tensors into the FaceNet extractor."""
+    """Load serialized backbone tensors into the FaceNet extractor.
+
+    Used by the Flower path where parameters genuinely arrive as numpy.
+    The simulation hot path uses ``copy_state_inplace`` (below) instead.
+    """
     reference_state = _ordered_feature_state(model)
     if len(parameters) != len(reference_state):
         raise ValueError(
@@ -84,7 +88,6 @@ def set_feature_extractor_parameters(
 
 
 def get_global_parameters(model: FedFaceModel) -> NDArrays:
-    """Serialize the full global model sent by the Flower server."""
     return get_feature_extractor_parameters(model) + [_to_numpy(model.W_matrix)]
 
 
@@ -92,7 +95,6 @@ def set_global_parameters(
     model: FedFaceModel,
     parameters: Sequence[np.ndarray],
 ) -> None:
-    """Load the full global model received from the Flower server."""
     feature_count = num_feature_tensors(model)
     if len(parameters) != feature_count + 1:
         raise ValueError(
@@ -108,17 +110,121 @@ def set_global_parameters(
     model.W_matrix.data.copy_(F.normalize(embedding_matrix, p=2, dim=1))
 
 
-def get_client_update_parameters(model: FedFaceModel, client_id: int) -> NDArrays:
-    """Serialize the payload a client returns after local training."""
+# ---------------------------------------------------------------------------
+# Fast in-process state copy (simulation hot path)
+# ---------------------------------------------------------------------------
+#
+# The Flower path requires (numpy <-> torch) round-trips because parameters
+# are genuinely serialized over the wire. The local simulator does not.
+# These helpers move parameters between two FedFaceModel instances, or
+# from a snapshot dict, using only torch tensor copies. No numpy involved.
+#
+# At 1000 clients x 200 rounds = 200,000 calls, the savings are large.
+
+@torch.no_grad()
+def snapshot_global_state(model: FedFaceModel) -> dict:
+    """Capture the global state as a dict of detached, cloned tensors.
+
+    Stays on the model's device. Used to broadcast the same state to
+    every client at the start of a round without re-serialising.
+    """
+    snap = {
+        "feature_extractor": OrderedDict(
+            (k, v.detach().clone()) for k, v in model.feature_extractor.state_dict().items()
+        ),
+        "W_matrix": model.W_matrix.detach().clone(),
+    }
+    return snap
+
+
+@torch.no_grad()
+def restore_global_state(model: FedFaceModel, snap: dict) -> None:
+    """Restore a snapshot in place. Equivalent to set_global_parameters
+    but without the numpy round-trip."""
+    snap_fe = snap["feature_extractor"]
+    # load_state_dict properly writes into the model's actual parameter tensors.
+    # Note: state_dict() returns copies, so in-place .copy_() on its output
+    # would NOT propagate back to the model — hence we use load_state_dict.
+    model.feature_extractor.load_state_dict(snap_fe, strict=True)
+
+    saved_W = snap["W_matrix"].to(device=model.W_matrix.device, dtype=model.W_matrix.dtype)
+    model.W_matrix.data.copy_(F.normalize(saved_W, p=2, dim=1))
+
+
+# ---------------------------------------------------------------------------
+# Client payload helpers (Flower path uses these as-is)
+# ---------------------------------------------------------------------------
+
+def get_client_update_parameters(
+    model: FedFaceModel,
+    client_id: int,
+    *,
+    n_local_samples: int | None = None,
+    dp_anchor_noise_multiplier: float = 0.0,
+    anchor_sensitivity_override: float | None = None,
+) -> NDArrays:
     client_embedding = F.normalize(model.W_matrix[client_id].detach(), p=2, dim=0)
-    return get_feature_extractor_parameters(model) + [_to_numpy(client_embedding)]
+    client_embedding_np = _to_numpy(client_embedding)
+
+    if dp_anchor_noise_multiplier != 0.0:
+        if n_local_samples is None:
+            raise ValueError("n_local_samples must be provided when anchor DP is enabled")
+        client_embedding_np = privatize_anchor(
+            anchor=client_embedding_np,
+            n_local_samples=int(n_local_samples),
+            noise_multiplier=float(dp_anchor_noise_multiplier),
+            sensitivity_override=anchor_sensitivity_override,
+        )
+
+    return get_feature_extractor_parameters(model) + [client_embedding_np]
+
+
+def get_secure_client_update_parameters(
+    model: FedFaceModel,
+    client_id: int,
+    selected_clients: int,
+    previous_embedding_matrix: np.ndarray,
+    *,
+    n_local_samples: int | None = None,
+    dp_anchor_noise_multiplier: float = 0.0,
+    anchor_sensitivity_override: float | None = None,
+) -> NDArrays:
+    """SecAgg+ payload. See module docstring for the per-row trick."""
+    if selected_clients <= 0:
+        raise ValueError("selected_clients must be positive.")
+
+    previous_matrix = np.asarray(previous_embedding_matrix).copy()
+    if previous_matrix.shape != tuple(model.W_matrix.shape):
+        raise ValueError(
+            "Unexpected previous embedding matrix shape. "
+            f"Expected {tuple(model.W_matrix.shape)}, received {previous_matrix.shape}."
+        )
+
+    updated_embedding = _to_numpy(
+        F.normalize(model.W_matrix[client_id].detach(), p=2, dim=0)
+    )
+
+    if dp_anchor_noise_multiplier != 0.0:
+        if n_local_samples is None:
+            raise ValueError("n_local_samples must be provided when anchor DP is enabled")
+        updated_embedding = privatize_anchor(
+            anchor=updated_embedding,
+            n_local_samples=int(n_local_samples),
+            noise_multiplier=float(dp_anchor_noise_multiplier),
+            sensitivity_override=anchor_sensitivity_override,
+        )
+
+    previous_row = previous_matrix[client_id].copy()
+    previous_matrix[client_id] = previous_row + selected_clients * (
+        updated_embedding - previous_row
+    )
+    return get_feature_extractor_parameters(model) + [previous_matrix]
 
 
 def split_client_update_parameters(
     model: FedFaceModel,
     parameters: Sequence[np.ndarray],
 ) -> tuple[NDArrays, np.ndarray]:
-    """Split a client payload into backbone weights and one embedding row."""
     feature_count = num_feature_tensors(model)
     if len(parameters) != feature_count + 1:
         raise ValueError(
@@ -128,19 +234,29 @@ def split_client_update_parameters(
     return list(parameters[:feature_count]), np.asarray(parameters[-1])
 
 
-def set_client_embedding(model: FedFaceModel, client_id: int, embedding: np.ndarray) -> None:
-    """Update one row of the global class embedding matrix."""
-    tensor = torch.from_numpy(np.asarray(embedding)).to(
-        dtype=model.W_matrix.dtype,
-        device=model.W_matrix.device,
-    )
+def set_client_embedding(model: FedFaceModel, client_id: int, embedding) -> None:
+    """Update one row of the global class embedding matrix.
+
+    Accepts either numpy ndarray or torch tensor; avoids needless conversion
+    when the source is already torch.
+    """
+    if isinstance(embedding, torch.Tensor):
+        tensor = embedding.to(dtype=model.W_matrix.dtype, device=model.W_matrix.device)
+    else:
+        tensor = torch.from_numpy(np.asarray(embedding)).to(
+            dtype=model.W_matrix.dtype,
+            device=model.W_matrix.device,
+        )
     model.W_matrix.data[client_id] = F.normalize(tensor, p=2, dim=0)
 
+
+# ---------------------------------------------------------------------------
+# Aggregation helpers (Flower path)
+# ---------------------------------------------------------------------------
 
 def weighted_average_ndarrays(
     weighted_parameters: Iterable[tuple[Sequence[np.ndarray], int]],
 ) -> NDArrays:
-    """Weighted-average floating tensors and keep integer buffers stable."""
     collected = list(weighted_parameters)
     if not collected:
         raise ValueError("Cannot aggregate an empty list of client updates.")
@@ -167,14 +283,17 @@ def weighted_average_ndarrays(
     return aggregated
 
 
+# ---------------------------------------------------------------------------
+# Spreadout regularizer
+# ---------------------------------------------------------------------------
+
 def spreadout_regularization_loss(
     embedding_matrix: torch.Tensor,
     margin: float = 0.35,
 ) -> torch.Tensor:
-    """Penalize pairs of client embeddings that become too similar."""
+    """See docstring in original file. Mean reduction (deliberate)."""
     if embedding_matrix.size(0) < 2:
         return embedding_matrix.new_tensor(0.0)
-
     normalized = F.normalize(embedding_matrix, p=2, dim=1)
     similarity = normalized @ normalized.T
     mask = ~torch.eye(similarity.size(0), dtype=torch.bool, device=similarity.device)
@@ -191,7 +310,6 @@ def apply_spreadout_regularization(
     steps: int = 1,
     lr: float = 0.1,
 ) -> float:
-    """Optimize the global class embedding matrix on the server side only."""
     if strength <= 0.0 or steps <= 0 or model.W_matrix.size(0) < 2:
         with torch.no_grad():
             model.W_matrix.data.copy_(F.normalize(model.W_matrix.data, p=2, dim=1))
@@ -222,7 +340,6 @@ def aggregate_client_updates(
     spreadout_steps: int = 1,
     spreadout_lr: float = 0.1,
 ) -> dict[str, float]:
-    """Apply the README aggregation recipe to the global model."""
     if not client_updates:
         raise ValueError("At least one client update is required.")
 

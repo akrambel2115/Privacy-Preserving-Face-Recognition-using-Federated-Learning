@@ -1,0 +1,15 @@
+{
+  "best": {
+    "num_rounds": 200,
+    "fraction_fit": 1.0,
+    "batch_size": 32,
+    "local_epochs": 1,
+    "lr": 0.001,
+    "margin": 0.9,
+    "pretrained": "vggface2",
+    "spreadout_strength": 10.0,
+    "spreadout_margin": 0.35,
+    "spreadout_steps": 1,
+    "spreadout_lr": 0.1
+  }
+}

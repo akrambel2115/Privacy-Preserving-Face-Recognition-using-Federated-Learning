@@ -6,7 +6,7 @@ click==8.3.1
 cryptography==44.0.3
 facenet-pytorch==2.6.0
 filelock==3.25.0
-flwr[simulation]>=1.27.0,<2.0.0
+flwr==1.26.1
 fsspec==2026.2.0
 greenlet==3.3.2
 grpcio==1.78.0

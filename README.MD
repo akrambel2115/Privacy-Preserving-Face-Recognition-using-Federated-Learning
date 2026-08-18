@@ -1,60 +1,122 @@
-# Privacy-Preserving Face Recognition using Federated Learning
+# Privacy-Preserving Face Recognition with Federated Learning
 
-## Project Overview
+An experimental face-recognition training system that uses federated learning to keep raw biometric images on each participant's device. Clients train locally with PyTorch and Flower, then send model updates to a coordinating server for aggregation.
 
-This project implements a privacy-preserving face recognition system where student biometric data 
-never leaves their personal devices.
+> This is a research prototype, not a production authentication system. Federated learning reduces raw-data centralization but does not by itself guarantee privacy against model-update leakage, membership inference, or model inversion.
 
-Instead of collecting all face images on a centralized server, 
-the system uses Federated Learning (FL) to collaboratively
-train a shared global model while keeping raw images stored locally.
+## Features
 
+- FaceNet (`InceptionResnetV1`) feature extractor initialized from VGGFace2 weights.
+- Positive-only local loss: each client trains only on its own face images.
+- Mean-feature initialization for each client's class embedding in the first round.
+- Flower server and client entry points for networked federated training.
+- Offline simulator for experimenting with multiple local client partitions.
+- Weighted FedAvg aggregation with optional server-side spreadout regularization for class embeddings.
 
-**On Each Student Device:**
+## How it works
 
-* Store face images locally
-* Perform local training
-* Send model updates (weights/gradients) to server
-* Never share raw images
+1. The server initializes a shared feature extractor and a class-embedding matrix.
+2. Each client receives the shared model, initializes its own embedding from local features, and trains on its local images.
+3. Clients return updated backbone parameters and their own embedding row; raw images are not part of the application protocol.
+4. The server computes a weighted average of backbone updates, restores client embedding rows, and can apply spreadout regularization.
 
-**On the Server:**
+![Federated learning workflow](assets/federated-learning-workflow.png)
 
-* Aggregate client updates using Federated Averaging (FedAvg)
-* Update the global model
-* Send updated model back to clients
+## Repository layout
 
+```text
+assets/                         Project diagrams used by documentation
+scripts/                        Command-line entry points and data downloader
+src/federated_project/          Application package
+  client.py                     Flower client implementation
+  server.py                     Flower server strategy
+  simulation.py                 Offline federated-learning simulator
+  dataset.py                    Dataset loading and client partitioning
+  federation.py                 Parameter exchange and aggregation helpers
+  model.py                      FaceNet-based model
+  train.py                      Local training and loss functions
+data/                           Local data location (dataset contents are ignored)
+```
 
-**Libraries Used**
+## Requirements
 
-* PyTorch
-* Flower
-* facenet_pytorch 
+- Python 3.10 or newer
+- pip
+- A CUDA-enabled PyTorch installation is optional; the project falls back to CPU when CUDA is unavailable.
 
+## Installation
 
-## The main workflow of federated learning  :
+Create and activate a virtual environment, then install the project:
 
-1. A global model is initialized either randomly  or with a pre-trained model. 
-2. The aggregating server sends the current version of the global model to the available clients
-3. The clients train the global model on their local data for a few iterations and send the model updates back
-4. The server aggregates the model updates to update the global model
-5. Steps 2-4 are repeated until the global model converges or achieves the desired performance.
-<img src="federated%20learning%20.png" alt="federated learning" width="600"/>
+```bash
+python -m venv .venv
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
 
+pip install --upgrade pip
+pip install -r requirements.txt
+```
 
-**Our approach**
-1. Pre-training & Mean Feature Initialization
-Global Pre-training: The server starts with a global face feature extractor(Facenet), parameterized by $\theta_{0}$, which is pre-trained on a publicly available dataset
-Initialization on Clients: In the first communication round, this global model is sent to all clients. Instead of initializing their personal class embedding randomly, each client generates their initial class embedding ($w_{0}^{i}$) by taking the mean of the features extracted from their local images using the pre-trained model
-Mathematical Representation: $w_{0}^{i}=\frac{1}{n_{i}}\sum_{j=1}^{n_{i}}f_{\theta_{0}}(x_{j}^{i})$
-(provides a significantly better starting point than a random guess and prevents the embeddings from disrupting the already learned feature space)
+PyTorch installation varies by operating system and CUDA version. If you need GPU support, install the matching PyTorch build from the [official PyTorch installation guide](https://pytorch.org/get-started/locally/) before installing this project.
 
-2. Local Client Updates (Positive-Only Loss)Local Optimization: During each communication round, the client updates the model parameters ($\theta_{t}$) and its personal class embedding ($w_{t}^{i}$) using only its local data.The Loss Function: Because the client has no access to other people's faces (negative embeddings), it optimizes a "positive-only" loss function. Specifically a squared hinge loss with cosine distance:
-$$l_{pos}(f_{\theta_{t}}(x),i)=max(0,m-(w_{t}^{i})^{T}f_{\theta_{t}}(x))^{2}$$
-This simply encourages the model to make the user's face images highly similar to their own class embedding
+## Data layout
 
-3. Server Aggregation Transmitting Updates: After local training, clients send their updated parameters back to the central server. Importantly, they only send their model weights and their single class embedding, never the raw face images
-Averaging: The server aggregates the feature extractor parameters ($\theta$) by taking a weighted average from all participating clients
-4. Spreadout Regularization (The Server-Side Fix)Preventing Collapse: Because the clients only trained on their own faces, the embeddings are at risk of collapsing into each other.The Regularizer: To fix this, the server applies a geometric technique called a Spreadout Regularizer directly to the concatenated class embedding matrix $W_{t}$.How it Works: This regularizer actively pushes the different class embeddings away from each other in the feature space. It penalizes the model if any two different class embeddings are too close to one another, enforcing a minimum margin of separation
+The dataset is deliberately excluded from version control. Do not commit face images or other biometric data.
 
+For the offline simulator, use one directory per person:
 
+```text
+data/celebs/
+  person_01/
+    image_001.jpg
+    image_002.jpg
+  person_02/
+    image_001.jpg
+```
+
+To download the example Celebrity Face Image Dataset to the ignored `data/celebs/` directory, run:
+
+```bash
+python scripts/download_data.py
+```
+
+Review the dataset's licence, terms, and consent requirements before downloading or using it. You are responsible for ensuring that your use of biometric data complies with applicable law and institutional policy.
+
+## Usage
+
+Run an offline simulation against a multi-person dataset:
+
+```bash
+python scripts/run_simulation.py --data-dir data/celebs --num-rounds 3
+```
+
+To run networked training, start the server first. `--num-clients` must match the number of participating clients:
+
+```bash
+python scripts/run_server.py --num-clients 2 --num-rounds 3
+```
+
+Then, on each client machine, point `--data-dir` to a folder containing only that participant's images:
+
+```bash
+python scripts/run_client.py --client-id 0 --num-clients 2 --data-dir path/to/client_0_images
+python scripts/run_client.py --client-id 1 --num-clients 2 --data-dir path/to/client_1_images
+```
+
+Use `--help` with any script to view available training, networking, and regularization options.
+
+## Privacy and security notes
+
+- Raw image files are intended to remain local and are excluded by `.gitignore`.
+- The current protocol transmits model parameters and a client embedding row. These values can still expose information; do not treat the implementation as a secure-aggregation or differential-privacy solution.
+- Never add credentials, tokens, private keys, or `.env` files to the repository. Local environment files and common model artifacts are ignored by default.
+- Use authenticated transport, access control, update validation, and a threat-model review before deploying this design beyond controlled research.
+
+## Development status
+
+The project is an early research prototype. Secure aggregation, formal privacy defenses, attack evaluation, comprehensive tests, and production deployment safeguards are not included.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
 

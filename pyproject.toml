@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "privacy-preserving-face-recognition"
+version = "0.1.0"
+description = "Federated face-recognition research prototype using Flower and PyTorch."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Akram Bel" },
+]
+keywords = ["federated-learning", "face-recognition", "privacy", "flower", "pytorch"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+  "facenet-pytorch>=2.6,<3",
+  "flwr>=1.26,<2",
+  "kagglehub>=0.3,<1",
+  "numpy>=1.26,<3",
+  "torch>=2.2,<3",
+  "torchvision>=0.17,<1",
+]
+
+[project.urls]
+Repository = "https://github.com/akrambel2115/Privacy-Preserving-Face-Recognition-using-Federated-Learning"
+Issues = "https://github.com/akrambel2115/Privacy-Preserving-Face-Recognition-using-Federated-Learning/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/federated_project"]
